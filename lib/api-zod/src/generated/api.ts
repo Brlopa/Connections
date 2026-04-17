@@ -25,6 +25,10 @@ export const SearchLocationsQueryParams = zod.object({
     .string()
     .optional()
     .describe("Type filter (station, address, poi)"),
+  network: zod.coerce
+    .string()
+    .optional()
+    .describe("Network: swiss (default) or europe"),
 });
 
 export const SearchLocationsResponse = zod.object({
@@ -69,6 +73,10 @@ export const SearchConnectionsQueryParams = zod.object({
     .number()
     .optional()
     .describe("Number of connections to return (max 6)"),
+  network: zod.coerce
+    .string()
+    .optional()
+    .describe("Network: swiss (default) or europe"),
 });
 
 export const SearchConnectionsResponse = zod.object({

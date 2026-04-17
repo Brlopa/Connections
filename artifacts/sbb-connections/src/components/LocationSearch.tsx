@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchLocations, getSearchLocationsQueryKey } from "@workspace/api-client-react";
 import { useDebounce } from "@/hooks/use-debounce";
 import { Input } from "@/components/ui/input";
@@ -12,17 +12,20 @@ interface LocationSearchProps {
   value: string;
   onChange: (value: string, location?: Location) => void;
   id: string;
+  network?: "swiss" | "europe";
 }
 
-export function LocationSearch({ label, placeholder, value, onChange, id }: LocationSearchProps) {
+export function LocationSearch({ label, placeholder, value, onChange, id, network = "swiss" }: LocationSearchProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState(value);
   const debouncedQuery = useDebounce(inputValue, 300);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
+  const params = { query: debouncedQuery, type: "station", network };
+
   const { data, isLoading } = useSearchLocations(
-    { query: debouncedQuery, type: "station" },
-    { query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey({ query: debouncedQuery, type: "station" }) } }
+    params,
+    { query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey(params) } }
   );
 
   useEffect(() => {
@@ -38,6 +41,8 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const stations = data?.stations ?? [];
 
   const handleSelect = (station: Location) => {
     const name = station.name || "";
@@ -72,9 +77,9 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
         <div className="absolute z-50 mt-1 w-full bg-card rounded-md border shadow-md max-h-60 overflow-auto">
           {isLoading ? (
             <div className="p-4 text-sm text-center text-muted-foreground animate-pulse">Loading stations...</div>
-          ) : data?.stations && data.stations.length > 0 ? (
+          ) : stations.length > 0 ? (
             <ul className="py-1">
-              {data.stations.map((station) => (
+              {stations.map((station) => (
                 <li
                   key={station.id || station.name}
                   onClick={() => handleSelect(station)}
