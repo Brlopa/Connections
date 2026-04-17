@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { format } from "date-fns";
-import { ArrowRightLeft, Search, Calendar, Clock } from "lucide-react";
+import { ArrowRightLeft, Search, Calendar, Clock, Timer } from "lucide-react";
 import { useSearchConnections, getSearchConnectionsQueryKey } from "@workspace/api-client-react";
 import type { Location } from "@workspace/api-client-react/src/generated/api.schemas";
 import { Layout } from "@/components/layout";
@@ -22,6 +22,7 @@ export default function SearchPage() {
 
   const [date, setDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [time, setTime] = useState(format(new Date(), "HH:mm"));
+  const [minTransferTime, setMinTransferTime] = useState(0);
 
   const [searchParams, setSearchParams] = useState<{ from: string; to: string; date: string; time: string } | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
@@ -58,6 +59,20 @@ export default function SearchPage() {
       });
     }
   };
+
+  const filteredConnections = (data?.connections ?? []).filter((conn) => {
+    if (minTransferTime === 0) return true;
+    const sections = conn.sections ?? [];
+    for (let i = 0; i < sections.length - 1; i++) {
+      const arrTs = sections[i].arrival?.arrivalTimestamp;
+      const depTs = sections[i + 1].departure?.departureTimestamp;
+      if (arrTs != null && depTs != null) {
+        const transferMins = (depTs - arrTs) / 60;
+        if (transferMins < minTransferTime) return false;
+      }
+    }
+    return true;
+  });
 
   const handleSelectConnection = (idx: number) => {
     if (selectedIdx === idx) {
@@ -143,18 +158,41 @@ export default function SearchPage() {
                   />
                 </div>
               </div>
-              <div className="flex-[0.5] flex items-end">
-                <Button
-                  type="submit"
-                  className="w-full h-12 text-base font-bold"
-                  disabled={!fromQuery || !toQuery}
-                  data-testid="button-search"
-                >
-                  <Search className="mr-2 h-5 w-5" />
-                  Search
-                </Button>
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="min-transfer" className="text-sm font-semibold text-muted-foreground">
+                  Min. transfer time
+                </Label>
+                <div className="relative">
+                  <Timer className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
+                  <select
+                    id="min-transfer"
+                    value={minTransferTime}
+                    onChange={(e) => setMinTransferTime(Number(e.target.value))}
+                    className="flex h-12 w-full rounded-md border border-input bg-background pl-10 pr-4 text-sm font-medium ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 appearance-none"
+                  >
+                    <option value={0}>Any</option>
+                    <option value={2}>2 min</option>
+                    <option value={3}>3 min</option>
+                    <option value={4}>4 min</option>
+                    <option value={5}>5 min</option>
+                    <option value={6}>6 min</option>
+                    <option value={8}>8 min</option>
+                    <option value={10}>10 min</option>
+                    <option value={15}>15 min</option>
+                  </select>
+                </div>
               </div>
             </div>
+
+            <Button
+              type="submit"
+              className="w-full h-12 text-base font-bold"
+              disabled={!fromQuery || !toQuery}
+              data-testid="button-search"
+            >
+              <Search className="mr-2 h-5 w-5" />
+              Search
+            </Button>
           </form>
         </div>
 
@@ -180,13 +218,19 @@ export default function SearchPage() {
             </div>
           )}
 
-          {!isLoading && !isError && data?.connections && data.connections.length > 0 && (
+          {!isLoading && !isError && data?.connections && data.connections.length > 0 && filteredConnections.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
+              No connections with at least {minTransferTime} min transfer time found. Try reducing the minimum.
+            </div>
+          )}
+
+          {!isLoading && !isError && filteredConnections.length > 0 && (
             <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <h2 className="text-xl font-bold tracking-tight mb-4">
-                Connections from {data.from?.name || searchParams?.from} to {data.to?.name || searchParams?.to}
+                Connections from {data?.from?.name || searchParams?.from} to {data?.to?.name || searchParams?.to}
               </h2>
 
-              {data.connections.map((connection, idx) => (
+              {filteredConnections.map((connection, idx) => (
                 <div key={idx} className="space-y-2">
                   <ConnectionCard
                     connection={connection}
