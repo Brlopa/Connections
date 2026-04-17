@@ -7,9 +7,12 @@ import { Layout } from "@/components/layout";
 import { LocationSearch } from "@/components/LocationSearch";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { ConnectionMap } from "@/components/ConnectionMap";
+import { JourneyTimeline } from "@/components/JourneyTimeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+type ExpandedView = "details" | "map" | "both";
 
 export default function SearchPage() {
   const [fromQuery, setFromQuery] = useState("");
@@ -22,6 +25,7 @@ export default function SearchPage() {
 
   const [searchParams, setSearchParams] = useState<{ from: string; to: string; date: string; time: string } | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [expandedView, setExpandedView] = useState<ExpandedView>("both");
 
   const { data, isLoading, isError } = useSearchConnections(
     searchParams || { from: "", to: "" },
@@ -56,10 +60,13 @@ export default function SearchPage() {
   };
 
   const handleSelectConnection = (idx: number) => {
-    setSelectedIdx((prev) => (prev === idx ? null : idx));
+    if (selectedIdx === idx) {
+      setSelectedIdx(null);
+    } else {
+      setSelectedIdx(idx);
+      setExpandedView("both");
+    }
   };
-
-  const selectedConnection = selectedIdx !== null && data?.connections ? data.connections[selectedIdx] : null;
 
   return (
     <Layout>
@@ -180,39 +187,63 @@ export default function SearchPage() {
               </h2>
 
               {data.connections.map((connection, idx) => (
-                <div key={idx}>
+                <div key={idx} className="space-y-2">
                   <ConnectionCard
                     connection={connection}
                     selected={selectedIdx === idx}
                     onClick={() => handleSelectConnection(idx)}
                   />
 
-                  {/* Map expands inline below the selected connection */}
+                  {/* Expanded detail panel */}
                   {selectedIdx === idx && (
-                    <div className="mt-2 animate-in fade-in slide-in-from-top-2 duration-300">
-                      <div className="rounded-xl border border-primary/30 overflow-hidden shadow-md">
-                        {/* Map legend */}
-                        <div className="bg-card px-4 py-2 border-b border-border flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                          <span className="font-semibold text-foreground">Route map</span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="inline-block w-3 h-3 rounded-full bg-green-600 border-2 border-white shadow" />
-                            Departure
-                          </span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="inline-block w-3 h-3 rounded-full bg-amber-500 border-2 border-white shadow" />
-                            Change here
-                          </span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="inline-block w-3 h-3 rounded-full bg-red-600 border-2 border-white shadow" />
-                            Arrival
-                          </span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-400 border border-white shadow" />
-                            Passing stop
-                          </span>
-                        </div>
-                        <ConnectionMap connection={connection} />
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-2 pl-1">
+
+                      {/* View toggle tabs */}
+                      <div className="flex items-center gap-1 text-xs">
+                        {(["both", "details", "map"] as ExpandedView[]).map((view) => (
+                          <button
+                            key={view}
+                            onClick={() => setExpandedView(view)}
+                            className={`px-3 py-1.5 rounded-md font-medium transition-colors capitalize
+                              ${expandedView === view
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted text-muted-foreground hover:bg-muted/80"
+                              }`}
+                          >
+                            {view === "both" ? "Details + Map" : view === "details" ? "Journey details" : "Map"}
+                          </button>
+                        ))}
                       </div>
+
+                      {/* Journey timeline */}
+                      {(expandedView === "details" || expandedView === "both") && (
+                        <JourneyTimeline
+                          connection={connection}
+                          onShowMap={() => setExpandedView("map")}
+                        />
+                      )}
+
+                      {/* Route map */}
+                      {(expandedView === "map" || expandedView === "both") && (
+                        <div className="rounded-xl border border-border overflow-hidden shadow-sm">
+                          <div className="bg-card px-4 py-2 border-b border-border flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                            <span className="font-semibold text-foreground">Route map</span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="inline-block w-3 h-3 rounded-full bg-green-600 border-2 border-white shadow" />
+                              Departure
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="inline-block w-3 h-3 rounded-full bg-amber-500 border-2 border-white shadow" />
+                              Change here
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="inline-block w-3 h-3 rounded-full bg-red-600 border-2 border-white shadow" />
+                              Arrival
+                            </span>
+                          </div>
+                          <ConnectionMap connection={connection} />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -221,13 +252,6 @@ export default function SearchPage() {
           )}
         </div>
       </div>
-
-      {/* Sticky map panel for selected connection (shown at bottom on mobile) */}
-      {selectedConnection && (
-        <div className="fixed bottom-4 right-4 z-40 hidden">
-          {/* placeholder for future floating panel */}
-        </div>
-      )}
     </Layout>
   );
 }

@@ -96,7 +96,7 @@ export function ConnectionCard({ connection, selected, onClick }: ConnectionCard
             </Badge>
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <MapPin className="h-3 w-3" />
-              {selected ? "Map shown below" : "Click to show map"}
+              {selected ? "Details shown below" : "Click for details + map"}
             </span>
           </div>
 
