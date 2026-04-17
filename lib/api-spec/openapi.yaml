@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: SBB Swiss Transport API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: transport
+    description: Swiss public transport operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,136 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /transport/locations:
+    get:
+      operationId: searchLocations
+      tags: [transport]
+      summary: Search for locations/stations
+      description: Search for Swiss public transport locations (stations, stops, addresses)
+      parameters:
+        - in: query
+          name: query
+          required: true
+          schema:
+            type: string
+          description: Search query string
+        - in: query
+          name: type
+          required: false
+          schema:
+            type: string
+          description: Type filter (station, address, poi)
+      responses:
+        "200":
+          description: List of matching locations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSearchResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transport/connections:
+    get:
+      operationId: searchConnections
+      tags: [transport]
+      summary: Search for connections between two stations
+      description: Find public transport connections between two locations in Switzerland
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+          description: Departure location name or ID
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+          description: Destination location name or ID
+        - in: query
+          name: date
+          required: false
+          schema:
+            type: string
+          description: Date in YYYY-MM-DD format (defaults to today)
+        - in: query
+          name: time
+          required: false
+          schema:
+            type: string
+          description: Time in HH:MM format (defaults to now)
+        - in: query
+          name: isArrivalTime
+          required: false
+          schema:
+            type: string
+          description: "1 if time is arrival time, 0 if departure (default: 0)"
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+          description: Number of connections to return (max 6)
+      responses:
+        "200":
+          description: List of connections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionSearchResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transport/stationboard:
+    get:
+      operationId: getStationboard
+      tags: [transport]
+      summary: Get departures/arrivals for a station
+      description: Returns the stationboard (next departures or arrivals) for a given station
+      parameters:
+        - in: query
+          name: station
+          required: true
+          schema:
+            type: string
+          description: Station name or ID
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+          description: Number of entries to return
+        - in: query
+          name: type
+          required: false
+          schema:
+            type: string
+          description: "Type: departure or arrival"
+      responses:
+        "200":
+          description: Stationboard entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationboardResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +166,221 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    Location:
+      type: object
+      properties:
+        id:
+          type: ["string", "null"]
+        name:
+          type: ["string", "null"]
+        score:
+          type: ["number", "null"]
+        coordinate:
+          $ref: "#/components/schemas/Coordinate"
+        distance:
+          type: ["number", "null"]
+        type:
+          type: string
+      required:
+        - type
+
+    Coordinate:
+      type: object
+      properties:
+        type:
+          type: string
+        x:
+          type: ["number", "null"]
+        y:
+          type: ["number", "null"]
+      required:
+        - type
+
+    LocationSearchResponse:
+      type: object
+      properties:
+        stations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Location"
+      required:
+        - stations
+
+    Connection:
+      type: object
+      properties:
+        from:
+          $ref: "#/components/schemas/Checkpoint"
+        to:
+          $ref: "#/components/schemas/Checkpoint"
+        duration:
+          type: ["string", "null"]
+        transfers:
+          type: ["integer", "null"]
+        service:
+          $ref: "#/components/schemas/Service"
+        products:
+          type: array
+          items:
+            type: string
+        capacity1st:
+          type: ["integer", "null"]
+        capacity2nd:
+          type: ["integer", "null"]
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Section"
+      required:
+        - from
+        - to
+        - sections
+
+    Checkpoint:
+      type: object
+      properties:
+        station:
+          $ref: "#/components/schemas/Location"
+        arrival:
+          type: ["string", "null"]
+        arrivalTimestamp:
+          type: ["integer", "null"]
+        departure:
+          type: ["string", "null"]
+        departureTimestamp:
+          type: ["integer", "null"]
+        delay:
+          type: ["integer", "null"]
+        platform:
+          type: ["string", "null"]
+        realtimeAvailability:
+          type: ["string", "null"]
+        prognosis:
+          $ref: "#/components/schemas/Prognosis"
+      required:
+        - station
+
+    Prognosis:
+      type: object
+      properties:
+        platform:
+          type: ["string", "null"]
+        arrival:
+          type: ["string", "null"]
+        departure:
+          type: ["string", "null"]
+        capacity1st:
+          type: ["string", "null"]
+        capacity2nd:
+          type: ["string", "null"]
+
+    Service:
+      type: object
+      properties:
+        regular:
+          type: ["string", "null"]
+        irregular:
+          type: ["string", "null"]
+
+    Section:
+      type: object
+      properties:
+        journey:
+          $ref: "#/components/schemas/Journey"
+        walk:
+          type: ["string", "null"]
+        departure:
+          $ref: "#/components/schemas/Checkpoint"
+        arrival:
+          $ref: "#/components/schemas/Checkpoint"
+      required:
+        - departure
+        - arrival
+
+    Journey:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        categoryCode:
+          type: ["integer", "null"]
+        number:
+          type: ["string", "null"]
+        operator:
+          type: ["string", "null"]
+        to:
+          type: ["string", "null"]
+        passList:
+          type: array
+          items:
+            $ref: "#/components/schemas/Checkpoint"
+        capacity1st:
+          type: ["integer", "null"]
+        capacity2nd:
+          type: ["integer", "null"]
+
+    ConnectionSearchResponse:
+      type: object
+      properties:
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Connection"
+        from:
+          $ref: "#/components/schemas/Location"
+        to:
+          $ref: "#/components/schemas/Location"
+      required:
+        - connections
+
+    StationboardEntry:
+      type: object
+      properties:
+        stop:
+          $ref: "#/components/schemas/Checkpoint"
+        name:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        subcategory:
+          type: ["string", "null"]
+        categoryCode:
+          type: ["integer", "null"]
+        number:
+          type: ["string", "null"]
+        operator:
+          type: ["string", "null"]
+        to:
+          type: ["string", "null"]
+        passList:
+          type: array
+          items:
+            $ref: "#/components/schemas/Checkpoint"
+        capacity1st:
+          type: ["integer", "null"]
+        capacity2nd:
+          type: ["integer", "null"]
+      required:
+        - stop
+
+    StationboardResponse:
+      type: object
+      properties:
+        station:
+          $ref: "#/components/schemas/Location"
+        stationboard:
+          type: array
+          items:
+            $ref: "#/components/schemas/StationboardEntry"
+      required:
+        - stationboard

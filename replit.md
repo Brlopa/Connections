@@ -4,6 +4,11 @@
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
+## Apps
+
+### SBB Connections (artifacts/sbb-connections)
+Swiss public transport connection finder. Uses the transport.opendata.ch public API (proxied through the API server) to search for connections, station autocomplete, and live stationboard departures. Frontend built with React+Vite, SBB red branding. Served at `/`.
+
 ## Stack
 
 - **Monorepo tool**: pnpm workspaces
