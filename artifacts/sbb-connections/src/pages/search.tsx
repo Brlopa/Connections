@@ -60,14 +60,24 @@ export default function SearchPage() {
     }
   };
 
+  function getMs(isoOrNull: string | null | undefined, tsOrNull: number | null | undefined): number | null {
+    if (tsOrNull != null) return tsOrNull * 1000;
+    if (isoOrNull) { try { return new Date(isoOrNull).getTime(); } catch { return null; } }
+    return null;
+  }
+
   const filteredConnections = (data?.connections ?? []).filter((conn) => {
     if (minTransferTime === 0) return true;
     const sections = conn.sections ?? [];
-    for (let i = 0; i < sections.length - 1; i++) {
-      const arrTs = sections[i].arrival?.arrivalTimestamp;
-      const depTs = sections[i + 1].departure?.departureTimestamp;
-      if (arrTs != null && depTs != null) {
-        const transferMins = (depTs - arrTs) / 60;
+    // Only consider sections that are actual vehicle legs (have a journey), not walk legs
+    const legs = sections.filter((s) => s.journey != null);
+    for (let i = 0; i < legs.length - 1; i++) {
+      const prevArr = legs[i].arrival;
+      const nextDep = legs[i + 1].departure;
+      const arrMs = getMs(prevArr?.arrival, prevArr?.arrivalTimestamp);
+      const depMs = getMs(nextDep?.departure, nextDep?.departureTimestamp);
+      if (arrMs != null && depMs != null) {
+        const transferMins = (depMs - arrMs) / 60000;
         if (transferMins < minTransferTime) return false;
       }
     }
