@@ -11,7 +11,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="container max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 font-bold text-xl text-primary tracking-tight">
             <Train className="h-6 w-6" />
-            <span>SBB Connections</span>
+            <span>Connections</span>
           </Link>
           
           <nav className="flex items-center gap-1">

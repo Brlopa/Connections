@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/"
-title = "SBB Swiss Transport"
+title = "Connections"
 version = "1.0.0"
 id = "artifacts/sbb-connections"
 router = "path"
