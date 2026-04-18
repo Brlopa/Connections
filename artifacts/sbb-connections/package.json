@@ -75,8 +75,10 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@maplibre/maplibre-gl-leaflet": "^1.0.1",
     "@types/leaflet": "^1.9.21",
     "leaflet": "^1.9.4",
+    "maplibre-gl": "^4.0.0",
     "react-leaflet": "^5.0.0"
   }
 }
