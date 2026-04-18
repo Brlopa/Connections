@@ -13,19 +13,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type ExpandedView = "details" | "map" | "both";
-type Network = "swiss" | "europe";
 
 type SearchParams = {
   from: string;
   to: string;
   date: string;
   time: string;
-  network: Network;
 };
 
 export default function SearchPage() {
-  const [network, setNetwork] = useState<Network>("swiss");
-
   const [fromQuery, setFromQuery] = useState("");
   const [toQuery, setToQuery] = useState("");
   const [fromStation, setFromStation] = useState<Location | null>(null);
@@ -58,27 +54,15 @@ export default function SearchPage() {
     setToStation(tempStation);
   };
 
-  const handleNetworkChange = (n: Network) => {
-    setNetwork(n);
-    setFromQuery("");
-    setToQuery("");
-    setFromStation(null);
-    setToStation(null);
-    setSearchParams(null);
-    setSelectedIdx(null);
-  };
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (fromQuery && toQuery) {
       setSelectedIdx(null);
-      const useId = network === "europe";
       setSearchParams({
-        from: useId ? (fromStation?.id || fromStation?.name || fromQuery) : (fromStation?.name || fromQuery),
-        to: useId ? (toStation?.id || toStation?.name || toQuery) : (toStation?.name || toQuery),
+        from: fromStation?.name || fromQuery,
+        to: toStation?.name || toQuery,
         date,
         time,
-        network,
       });
     }
   };
@@ -121,41 +105,15 @@ export default function SearchPage() {
         {/* Search form */}
         <div className="bg-card border rounded-xl p-4 md:p-6 shadow-sm">
           <form onSubmit={handleSearch} className="space-y-4">
-
-            {/* Network toggle */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mr-1">Network</span>
-              <div className="flex rounded-lg border border-input overflow-hidden text-sm">
-                <button
-                  type="button"
-                  onClick={() => handleNetworkChange("swiss")}
-                  className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5
-                    ${network === "swiss" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
-                >
-                  🇨🇭 Switzerland
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNetworkChange("europe")}
-                  className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 border-l border-input
-                    ${network === "europe" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
-                >
-                  🌍 Europe
-                </button>
-              </div>
-            </div>
-
             <div className="flex flex-col md:flex-row items-end gap-4">
               <LocationSearch
                 id="from-station"
                 label="From"
                 placeholder="Station or stop"
                 value={fromQuery}
-                network={network}
                 onChange={(val, loc) => {
                   setFromQuery(val);
-                  if (loc) setFromStation(loc);
-                  else setFromStation(null);
+                  setFromStation(loc ?? null);
                 }}
               />
 
@@ -176,20 +134,16 @@ export default function SearchPage() {
                 label="To"
                 placeholder="Station or stop"
                 value={toQuery}
-                network={network}
                 onChange={(val, loc) => {
                   setToQuery(val);
-                  if (loc) setToStation(loc);
-                  else setToStation(null);
+                  setToStation(loc ?? null);
                 }}
               />
             </div>
 
             <div className="flex flex-col md:flex-row gap-4">
               <div className="flex-1 space-y-1.5">
-                <Label htmlFor="date" className="text-sm font-semibold text-muted-foreground">
-                  Date
-                </Label>
+                <Label htmlFor="date" className="text-sm font-semibold text-muted-foreground">Date</Label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -203,9 +157,7 @@ export default function SearchPage() {
                 </div>
               </div>
               <div className="flex-1 space-y-1.5">
-                <Label htmlFor="time" className="text-sm font-semibold text-muted-foreground">
-                  Time
-                </Label>
+                <Label htmlFor="time" className="text-sm font-semibold text-muted-foreground">Time</Label>
                 <div className="relative">
                   <Clock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -298,11 +250,8 @@ export default function SearchPage() {
                     onClick={() => handleSelectConnection(idx)}
                   />
 
-                  {/* Expanded detail panel */}
                   {selectedIdx === idx && (
                     <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-2 pl-1">
-
-                      {/* View toggle tabs */}
                       <div className="flex items-center gap-1 text-xs">
                         {(["both", "details", "map"] as ExpandedView[]).map((view) => (
                           <button
@@ -319,7 +268,6 @@ export default function SearchPage() {
                         ))}
                       </div>
 
-                      {/* Journey timeline */}
                       {(expandedView === "details" || expandedView === "both") && (
                         <JourneyTimeline
                           connection={connection}
@@ -327,7 +275,6 @@ export default function SearchPage() {
                         />
                       )}
 
-                      {/* Route map */}
                       {(expandedView === "map" || expandedView === "both") && (
                         <div className="rounded-xl border border-border overflow-hidden shadow-sm">
                           <div className="bg-card px-4 py-2 border-b border-border flex flex-wrap items-center gap-4 text-xs text-muted-foreground">

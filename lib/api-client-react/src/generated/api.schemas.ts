@@ -164,10 +164,6 @@ export type SearchLocationsParams = {
    * Type filter (station, address, poi)
    */
   type?: string;
-  /**
-   * Network: "swiss" (default) or "europe"
-   */
-  network?: string;
 };
 
 export type SearchConnectionsParams = {
@@ -195,10 +191,6 @@ export type SearchConnectionsParams = {
    * Number of connections to return (max 6)
    */
   limit?: number;
-  /**
-   * Network: "swiss" (default) or "europe"
-   */
-  network?: string;
 };
 
 export type GetStationboardParams = {

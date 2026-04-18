@@ -12,25 +12,21 @@ interface LocationSearchProps {
   value: string;
   onChange: (value: string, location?: Location) => void;
   id: string;
-  network?: "swiss" | "europe";
 }
 
-export function LocationSearch({ label, placeholder, value, onChange, id, network = "swiss" }: LocationSearchProps) {
+export function LocationSearch({ label, placeholder, value, onChange, id }: LocationSearchProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState(value);
   const debouncedQuery = useDebounce(inputValue, 300);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const params = { query: debouncedQuery, type: "station", network };
-
+  const params = { query: debouncedQuery, type: "station" };
   const { data, isLoading } = useSearchLocations(
     params,
     { query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey(params) } }
   );
 
-  useEffect(() => {
-    setInputValue(value);
-  }, [value]);
+  useEffect(() => { setInputValue(value); }, [value]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -42,14 +38,14 @@ export function LocationSearch({ label, placeholder, value, onChange, id, networ
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const stations = data?.stations ?? [];
-
   const handleSelect = (station: Location) => {
     const name = station.name || "";
     setInputValue(name);
     onChange(name, station);
     setIsOpen(false);
   };
+
+  const stations = data?.stations ?? [];
 
   return (
     <div className="relative flex-1" ref={wrapperRef}>
