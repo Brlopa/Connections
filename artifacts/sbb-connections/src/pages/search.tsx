@@ -2,9 +2,8 @@ import { useState } from "react";
 import { format } from "date-fns";
 import { ArrowRightLeft, Search, Calendar, Clock, Timer } from "lucide-react";
 import { useSearchConnections, getSearchConnectionsQueryKey } from "@workspace/api-client-react";
-import type { Location } from "@workspace/api-client-react/src/generated/api.schemas";
 import { Layout } from "@/components/layout";
-import { LocationSearch } from "@/components/LocationSearch";
+import { LocationSearch, type EnrichedLocation } from "@/components/LocationSearch";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { ConnectionMap } from "@/components/ConnectionMap";
 import { JourneyTimeline } from "@/components/JourneyTimeline";
@@ -19,13 +18,15 @@ type SearchParams = {
   to: string;
   date: string;
   time: string;
+  fromDbId?: string;
+  toDbId?: string;
 };
 
 export default function SearchPage() {
   const [fromQuery, setFromQuery] = useState("");
   const [toQuery, setToQuery] = useState("");
-  const [fromStation, setFromStation] = useState<Location | null>(null);
-  const [toStation, setToStation] = useState<Location | null>(null);
+  const [fromStation, setFromStation] = useState<EnrichedLocation | null>(null);
+  const [toStation, setToStation] = useState<EnrichedLocation | null>(null);
 
   const [date, setDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [time, setTime] = useState(format(new Date(), "HH:mm"));
@@ -63,6 +64,8 @@ export default function SearchPage() {
         to: toStation?.name || toQuery,
         date,
         time,
+        fromDbId: fromStation?.dbId ?? undefined,
+        toDbId: toStation?.dbId ?? undefined,
       });
     }
   };

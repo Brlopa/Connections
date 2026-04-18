@@ -191,6 +191,14 @@ export type SearchConnectionsParams = {
    * Number of connections to return (max 6)
    */
   limit?: number;
+  /**
+   * Pre-resolved DB station ID for the from station
+   */
+  fromDbId?: string;
+  /**
+   * Pre-resolved DB station ID for the to station
+   */
+  toDbId?: string;
 };
 
 export type GetStationboardParams = {

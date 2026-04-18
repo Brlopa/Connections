@@ -10,36 +10,42 @@ const router: IRouter = Router();
 const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 const DB_API_BASE = "https://v6.db.transport.rest";
 
+// ── fetch helpers ──────────────────────────────────────────────
+
 async function fetchTransport(
   path: string,
   params: Record<string, string | number | boolean | undefined>,
 ): Promise<unknown> {
   const url = new URL(`${TRANSPORT_API_BASE}${path}`);
-  for (const [key, val] of Object.entries(params)) {
-    if (val !== undefined && val !== null && val !== "") {
-      url.searchParams.set(key, String(val));
-    }
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
-  const response = await fetch(url.toString());
-  if (!response.ok) throw new Error(`Swiss API ${response.status}`);
-  return response.json();
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`Swiss API ${res.status}`);
+  return res.json();
 }
 
 async function fetchDb(
   path: string,
   params: Record<string, string | number | boolean | undefined>,
+  timeoutMs = 4500,
 ): Promise<unknown> {
   const url = new URL(`${DB_API_BASE}${path}`);
-  for (const [key, val] of Object.entries(params)) {
-    if (val !== undefined && val !== null && val !== "") {
-      url.searchParams.set(key, String(val));
-    }
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
-  const response = await fetch(url.toString(), {
-    headers: { "Accept-Encoding": "gzip" },
-  });
-  if (!response.ok) throw new Error(`DB API ${response.status}`);
-  return response.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { "Accept-Encoding": "gzip" },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`DB API ${res.status}`);
+    return res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── normalizers ────────────────────────────────────────────────
@@ -75,6 +81,7 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
   const line = leg.line as Record<string, unknown> | null | undefined;
   const origin = (leg.origin as Record<string, unknown>) ?? {};
   const destination = (leg.destination as Record<string, unknown>) ?? {};
+  const isWalk = leg.walking === true || !line;
 
   const depStr = (leg.plannedDeparture ?? leg.departure) as string | null | undefined;
   const arrStr = (leg.plannedArrival ?? leg.arrival) as string | null | undefined;
@@ -83,22 +90,20 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
 
   const stopovers = (leg.stopovers as Array<Record<string, unknown>>) ?? [];
   const passList = stopovers.map((sv) => {
-    const stop = ((sv.stop ?? sv.station ?? {}) as Record<string, unknown>);
+    const stop = (sv.stop ?? sv.station ?? {}) as Record<string, unknown>;
     const svDep = (sv.plannedDeparture ?? sv.departure) as string | null | undefined;
     const svArr = (sv.plannedArrival ?? sv.arrival) as string | null | undefined;
-    const delay = sv.departureDelay as number | null | undefined;
     return {
       station: normalizeDbLocation(stop),
       arrival: svArr ?? null,
       arrivalTimestamp: svArr ? Math.floor(new Date(svArr).getTime() / 1000) : null,
       departure: svDep ?? null,
       departureTimestamp: svDep ? Math.floor(new Date(svDep).getTime() / 1000) : null,
-      delay: delay != null ? Math.round(delay / 60) : null,
+      delay: null,
       platform: sv.departurePlatform ?? null,
     };
   });
 
-  const isWalk = leg.walking === true || !line;
   const depDelay = leg.departureDelay as number | null | undefined;
   const arrDelay = leg.arrivalDelay as number | null | undefined;
 
@@ -112,7 +117,7 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
           passList: [],
         }
       : null,
-    walk: isWalk ? {} : null,
+    walk: isWalk ? { duration: depTs && arrTs ? arrTs - depTs : null, distance: leg.distance ?? null } : null,
     departure: {
       station: normalizeDbLocation(origin),
       departure: depStr ?? null,
@@ -164,7 +169,6 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
   }
   const { query, type } = parsed.data;
 
-  // Query both networks in parallel; don't fail if one errors
   const [swissResult, dbResult] = await Promise.allSettled([
     fetchTransport("/locations", { query, type }),
     fetchDb("/locations", { query, results: 8, fuzzy: true }),
@@ -179,13 +183,29 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
     dbResult.status === "fulfilled" && Array.isArray(dbResult.value)
       ? (dbResult.value as Record<string, unknown>[]).filter((l) => l.type === "station")
       : [];
-  const dbStations = dbRaw.map(normalizeDbLocation);
 
-  // Merge: Swiss first, then DB stations not already present by name
-  const swissNames = new Set(swissStations.map((s) => String(s.name ?? "").toLowerCase()));
-  const uniqueDb = dbStations.filter((s) => !swissNames.has(String(s.name ?? "").toLowerCase()));
+  // Build name → DB station map for ID enrichment
+  const dbByName = new Map<string, Record<string, unknown>>();
+  for (const dbStn of dbRaw) {
+    const name = String(dbStn.name ?? "").toLowerCase();
+    if (name) dbByName.set(name, dbStn);
+  }
 
-  res.json({ stations: [...swissStations, ...uniqueDb] });
+  // Enrich Swiss stations with DB ID when names match
+  const enrichedSwiss = swissStations.map((s) => {
+    const nameLower = String(s.name ?? "").toLowerCase();
+    const dbMatch = dbByName.get(nameLower);
+    if (dbMatch) {
+      dbByName.delete(nameLower); // don't add as a separate DB-only entry
+      return { ...s, dbId: dbMatch.id ?? null };
+    }
+    return s;
+  });
+
+  // Remaining DB-only stations
+  const dbOnlyStations = Array.from(dbByName.values()).map(normalizeDbLocation);
+
+  res.json({ stations: [...enrichedSwiss, ...dbOnlyStations] });
 });
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
@@ -194,14 +214,14 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { from, to, date, time, isArrivalTime, limit } = parsed.data;
+  const { from, to, date, time, isArrivalTime, limit, fromDbId, toDbId } = parsed.data;
 
   const dateStr = date ?? new Date().toISOString().split("T")[0];
   const timeStr =
     time ??
     `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
 
-  // Swiss and DB queries run in parallel
+  // Swiss query always runs (fast, parallel)
   const swissPromise = fetchTransport("/connections", {
     from,
     to,
@@ -211,25 +231,34 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     limit,
   }).catch(() => null);
 
+  // DB query: use pre-resolved IDs if available, otherwise look them up (with timeout)
   const dbPromise = (async () => {
     try {
-      // Resolve station IDs from names first (parallel)
-      const [fromLocs, toLocs] = await Promise.all([
-        fetchDb("/locations", { query: from, results: 1, fuzzy: true }) as Promise<Record<string, unknown>[]>,
-        fetchDb("/locations", { query: to, results: 1, fuzzy: true }) as Promise<Record<string, unknown>[]>,
-      ]);
-      const fromId = fromLocs?.[0]?.id as string | undefined;
-      const toId = toLocs?.[0]?.id as string | undefined;
-      if (!fromId || !toId) return null;
+      let resolvedFromId = fromDbId;
+      let resolvedToId = toDbId;
+
+      if (!resolvedFromId || !resolvedToId) {
+        // Only look up the IDs we don't have yet
+        const lookups = await Promise.all([
+          !resolvedFromId
+            ? (fetchDb("/locations", { query: from, results: 1, fuzzy: true }, 3000) as Promise<Record<string, unknown>[]>).catch(() => null)
+            : Promise.resolve(null),
+          !resolvedToId
+            ? (fetchDb("/locations", { query: to, results: 1, fuzzy: true }, 3000) as Promise<Record<string, unknown>[]>).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        if (!resolvedFromId) resolvedFromId = (lookups[0]?.[0]?.id as string | undefined);
+        if (!resolvedToId) resolvedToId = (lookups[1]?.[0]?.id as string | undefined);
+      }
+
+      if (!resolvedFromId || !resolvedToId) return null;
 
       const departure = `${dateStr}T${timeStr}:00`;
-      return fetchDb("/journeys", {
-        from: fromId,
-        to: toId,
-        departure,
-        results: limit ?? 5,
-        stopovers: true,
-      }) as Promise<Record<string, unknown>>;
+      return fetchDb(
+        "/journeys",
+        { from: resolvedFromId, to: resolvedToId, departure, results: limit ?? 5, stopovers: true },
+        8000,
+      ) as Promise<Record<string, unknown>>;
     } catch {
       return null;
     }
@@ -244,7 +273,7 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     (dbData as Record<string, unknown> | null)?.journeys as Record<string, unknown>[] ?? [];
   const dbConnections = dbJourneys.map(normalizeDbJourney);
 
-  // Merge: keep Swiss results, add DB results not already covered (same dep+arr time ±1 min)
+  // Merge: Swiss first, add DB results not already covered (same dep+arr ±90s)
   const merged = [...swissConnections];
   for (const dbConn of dbConnections) {
     const dbSections = (dbConn.sections as Record<string, unknown>[]) ?? [];

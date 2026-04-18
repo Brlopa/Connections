@@ -69,6 +69,14 @@ export const SearchConnectionsQueryParams = zod.object({
     .number()
     .optional()
     .describe("Number of connections to return (max 6)"),
+  fromDbId: zod.coerce
+    .string()
+    .optional()
+    .describe("Pre-resolved DB station ID for the from station"),
+  toDbId: zod.coerce
+    .string()
+    .optional()
+    .describe("Pre-resolved DB station ID for the to station"),
 });
 
 export const SearchConnectionsResponse = zod.object({

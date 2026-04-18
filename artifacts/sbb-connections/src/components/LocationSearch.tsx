@@ -6,11 +6,13 @@ import { Label } from "@/components/ui/label";
 import { MapPin } from "lucide-react";
 import type { Location } from "@workspace/api-client-react/src/generated/api.schemas";
 
+export type EnrichedLocation = Location & { dbId?: string | null };
+
 interface LocationSearchProps {
   label: string;
   placeholder: string;
   value: string;
-  onChange: (value: string, location?: Location) => void;
+  onChange: (value: string, location?: EnrichedLocation) => void;
   id: string;
 }
 
@@ -21,10 +23,9 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const params = { query: debouncedQuery, type: "station" };
-  const { data, isLoading } = useSearchLocations(
-    params,
-    { query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey(params) } }
-  );
+  const { data, isLoading } = useSearchLocations(params, {
+    query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey(params) },
+  });
 
   useEffect(() => { setInputValue(value); }, [value]);
 
@@ -38,14 +39,14 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleSelect = (station: Location) => {
+  const handleSelect = (station: EnrichedLocation) => {
     const name = station.name || "";
     setInputValue(name);
     onChange(name, station);
     setIsOpen(false);
   };
 
-  const stations = data?.stations ?? [];
+  const stations = (data?.stations ?? []) as EnrichedLocation[];
 
   return (
     <div className="relative flex-1" ref={wrapperRef}>
@@ -72,7 +73,9 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
       {isOpen && debouncedQuery.length > 1 && (
         <div className="absolute z-50 mt-1 w-full bg-card rounded-md border shadow-md max-h-60 overflow-auto">
           {isLoading ? (
-            <div className="p-4 text-sm text-center text-muted-foreground animate-pulse">Loading stations...</div>
+            <div className="p-4 text-sm text-center text-muted-foreground animate-pulse">
+              Loading stations…
+            </div>
           ) : stations.length > 0 ? (
             <ul className="py-1">
               {stations.map((station) => (
@@ -81,7 +84,7 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
                   onClick={() => handleSelect(station)}
                   className="px-4 py-2 hover:bg-accent hover:text-accent-foreground cursor-pointer text-sm transition-colors flex items-center gap-2"
                 >
-                  <MapPin className="h-3 w-3 text-primary/60" />
+                  <MapPin className="h-3 w-3 text-primary/60 shrink-0" />
                   <span className="font-medium">{station.name}</span>
                 </li>
               ))}

@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { format, parseISO } from "date-fns";
-import { PersonStanding, TrainFront, Train, Bus, Ship, Clock } from "lucide-react";
+import { PersonStanding, TrainFront, Train, Bus, Ship, Clock, Footprints } from "lucide-react";
 import type { Connection, Section, Checkpoint } from "@workspace/api-client-react/src/generated/api.schemas";
 
 function formatTime(iso: string | null | undefined): string {
@@ -8,15 +8,17 @@ function formatTime(iso: string | null | undefined): string {
   try { return format(parseISO(iso), "HH:mm"); } catch { return "--:--"; }
 }
 
-// Derive vehicle color and icon from category
+function formatDuration(seconds: number | null | undefined): string {
+  if (!seconds) return "";
+  const m = Math.round(seconds / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 function getVehicleStyle(category: string | null | undefined): {
-  bg: string;
-  fg: string;
-  icon: ReactNode;
-  label: string;
+  bg: string; fg: string; icon: ReactNode; label: string;
 } {
   const cat = (category || "").toUpperCase();
-
   if (cat === "IC" || cat === "ICE" || cat === "EC" || cat === "IR") {
     return { bg: "#dc2626", fg: "#fff", icon: <TrainFront className="h-3.5 w-3.5" />, label: cat };
   }
@@ -35,28 +37,27 @@ function getVehicleStyle(category: string | null | undefined): {
   return { bg: "#374151", fg: "#fff", icon: <TrainFront className="h-3.5 w-3.5" />, label: cat };
 }
 
-// ------- sub-components -------
+// ── sub-components ─────────────────────────────────────────────
 
 function TimeCell({ time, delay }: { time: string | null | undefined; delay?: number | null }) {
-  const t = formatTime(time);
   return (
     <div className="w-14 shrink-0 text-right pr-3 pt-0.5">
-      <span className="text-sm font-bold tabular-nums text-foreground">{t}</span>
+      <span className="text-sm font-bold tabular-nums text-foreground">{formatTime(time)}</span>
       {delay != null && delay > 0 && (
         <div className="flex items-center justify-end gap-0.5 mt-0.5">
           <Clock className="h-3 w-3 text-destructive" />
-          <span className="text-xs font-semibold text-destructive">ca +{delay}'</span>
+          <span className="text-xs font-semibold text-destructive">+{delay}'</span>
         </div>
       )}
     </div>
   );
 }
 
-function DotFilled() {
+function DotFilled({ color = "bg-foreground" }: { color?: string }) {
   return (
     <div className="relative flex items-start justify-center w-5 shrink-0">
       <div className="absolute top-1.5 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-border" />
-      <div className="relative z-10 w-3 h-3 rounded-full bg-foreground border-2 border-foreground mt-0.5" />
+      <div className={`relative z-10 w-3 h-3 rounded-full ${color} border-2 border-white mt-0.5 shadow-sm`} />
     </div>
   );
 }
@@ -70,15 +71,14 @@ function DotOpen() {
   );
 }
 
-function LineOnly() {
+function LineOnly({ dashed = false }: { dashed?: boolean }) {
   return (
     <div className="flex items-stretch justify-center w-5 shrink-0">
-      <div className="w-0.5 bg-border" />
+      <div className={`w-0.5 ${dashed ? "border-l-2 border-dashed border-muted-foreground/40" : "bg-border"}`} />
     </div>
   );
 }
 
-// A row showing a stop (start or end of a journey leg)
 function StopRow({
   checkpoint,
   isStart,
@@ -95,18 +95,25 @@ function StopRow({
   const time = isEnd ? checkpoint.arrival : checkpoint.departure;
   const delay = checkpoint.delay;
   const platform = checkpoint.platform;
+  const dotColor = isFirst
+    ? "bg-green-600"
+    : isLast
+    ? "bg-red-600"
+    : "bg-foreground";
 
   return (
     <div className="flex items-start gap-0">
       <TimeCell time={time} delay={delay} />
-      {isFirst ? <DotFilled /> : isLast ? <DotFilled /> : isStart ? <DotFilled /> : isEnd ? <DotFilled /> : <DotOpen />}
+      <DotFilled color={dotColor} />
       <div className="flex-1 pl-3 pb-3">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="text-sm font-bold text-foreground leading-tight">
             {checkpoint.station?.name ?? "–"}
           </span>
           {platform && (
-            <span className="text-xs text-muted-foreground">Pl. {platform}</span>
+            <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+              Pl. {platform}
+            </span>
           )}
         </div>
       </div>
@@ -114,35 +121,76 @@ function StopRow({
   );
 }
 
-// The middle part of a leg (vehicle badge + direction)
 function LegInfo({ section }: { section: Section }) {
   const j = section.journey;
   if (!j) return null;
-
   const style = getVehicleStyle(j.category);
-  const lineNumber = j.number ?? "";
-
   return (
     <div className="flex items-start gap-0">
-      {/* empty time cell */}
       <div className="w-14 shrink-0" />
       <LineOnly />
       <div className="flex-1 pl-3 pb-3">
-        {/* Vehicle badge */}
-        <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold mb-1"
-          style={{ background: style.bg, color: style.fg }}>
+        <div
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold mb-1"
+          style={{ background: style.bg, color: style.fg }}
+        >
           {style.icon}
-          <span>{style.label} {lineNumber}</span>
+          <span>{style.label} {j.number ?? ""}</span>
         </div>
-        {j.to && (
-          <div className="text-xs text-muted-foreground">Direction {j.to}</div>
+        {j.to && <div className="text-xs text-muted-foreground">Direction {j.to}</div>}
+      </div>
+    </div>
+  );
+}
+
+function WalkRow({ section }: { section: Section }) {
+  const walkData = section.walk as Record<string, unknown> | null | undefined;
+  const durationSec = walkData?.duration as number | null | undefined;
+  const distanceM = walkData?.distance as number | null | undefined;
+  const depTime = section.departure?.departure;
+  const arrTime = section.arrival?.arrival;
+  const arrStation = section.arrival?.station?.name;
+  const depStation = section.departure?.station?.name;
+
+  // Compute duration from timestamps if not directly available
+  let displayDuration = durationSec ? formatDuration(durationSec) : "";
+  if (!displayDuration && depTime && arrTime) {
+    try {
+      const diffSec = (new Date(arrTime).getTime() - new Date(depTime).getTime()) / 1000;
+      if (diffSec > 0) displayDuration = formatDuration(diffSec);
+    } catch { /* ignore */ }
+  }
+
+  const distanceStr = distanceM ? `${Math.round(distanceM)} m` : "";
+  const detail = [displayDuration, distanceStr].filter(Boolean).join(" · ");
+
+  return (
+    <div className="flex items-center gap-0 py-2 bg-amber-50 dark:bg-amber-950/20 my-1 rounded-md border border-amber-200 dark:border-amber-800/40">
+      <div className="w-14 shrink-0 text-right pr-3">
+        {depTime && (
+          <span className="text-xs font-mono text-muted-foreground tabular-nums">{formatTime(depTime)}</span>
+        )}
+      </div>
+      <LineOnly dashed />
+      <div className="flex-1 pl-3 flex items-center gap-2">
+        <Footprints className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Walk</span>
+          {detail && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 ml-2">{detail}</span>
+          )}
+          {arrStation && arrStation !== depStation && (
+            <div className="text-xs text-muted-foreground truncate">to {arrStation}</div>
+          )}
+        </div>
+        {arrTime && (
+          <span className="text-xs font-mono text-muted-foreground tabular-nums pr-3">{formatTime(arrTime)}</span>
         )}
       </div>
     </div>
   );
 }
 
-// Transfer row between legs
 function TransferRow({ onShowMap }: { onShowMap?: () => void }) {
   return (
     <div className="flex items-center gap-0 py-2 bg-muted/40 my-1 rounded-md">
@@ -165,7 +213,7 @@ function TransferRow({ onShowMap }: { onShowMap?: () => void }) {
   );
 }
 
-// ------- main component -------
+// ── main component ─────────────────────────────────────────────
 
 export function JourneyTimeline({
   connection,
@@ -174,11 +222,18 @@ export function JourneyTimeline({
   connection: Connection;
   onShowMap?: () => void;
 }) {
-  const sections = connection.sections;
-  // only journey sections (not walk-only)
-  const journeySections = sections.filter((s) => s.journey);
+  const sections = connection.sections ?? [];
+  if (sections.length === 0) return null;
 
-  if (journeySections.length === 0) return null;
+  // Find the indices of the first and last journey (vehicle) sections
+  const journeyIndices = sections
+    .map((s, i) => (s.journey ? i : -1))
+    .filter((i) => i >= 0);
+
+  if (journeyIndices.length === 0) return null;
+
+  const firstJourneyIdx = journeyIndices[0];
+  const lastJourneyIdx = journeyIndices[journeyIndices.length - 1];
 
   return (
     <div className="bg-card rounded-xl border border-border overflow-hidden">
@@ -187,63 +242,61 @@ export function JourneyTimeline({
       </div>
 
       <div className="px-2 py-3">
-        {journeySections.map((section, idx) => {
-          const isFirstSection = idx === 0;
-          const isLastSection = idx === journeySections.length - 1;
+        {sections.map((section, idx) => {
+          // Walk section
+          if (section.walk && !section.journey) {
+            return <WalkRow key={idx} section={section} />;
+          }
 
-          // Collect stops: departure + intermediate passList entries + arrival
-          const passList = section.journey?.passList ?? [];
-          // passList typically includes departure & arrival as first/last entries
-          // If passList exists and has entries, use it; otherwise just dep/arr
-          const intermediateStops =
-            passList.length > 2
-              ? passList.slice(1, passList.length - 1)
-              : [];
+          // Journey section
+          if (section.journey) {
+            const isFirstSection = idx === firstJourneyIdx;
+            const isLastSection = idx === lastJourneyIdx;
 
-          return (
-            <div key={idx}>
-              {/* Transfer between sections */}
-              {idx > 0 && (
-                <TransferRow onShowMap={onShowMap} />
-              )}
+            // Check if the previous non-walk section was also a journey (needs transfer row)
+            const prevSection = idx > 0 ? sections[idx - 1] : null;
+            const prevWasJourney = prevSection?.journey != null;
+            const prevWasWalk = prevSection?.walk != null && !prevSection.journey;
+            const needsTransferRow = prevWasJourney && !prevWasWalk;
 
-              {/* Departure stop */}
-              <StopRow
-                checkpoint={section.departure}
-                isStart
-                isFirst={isFirstSection}
-              />
+            const passList = section.journey?.passList ?? [];
+            const intermediateStops = passList.length > 2 ? passList.slice(1, passList.length - 1) : [];
 
-              {/* Vehicle / line info */}
-              <LegInfo section={section} />
+            return (
+              <div key={idx}>
+                {needsTransferRow && <TransferRow onShowMap={onShowMap} />}
 
-              {/* Intermediate stops (collapsed by default, shown as small rows) */}
-              {intermediateStops.map((stop, sIdx) => (
-                <div key={sIdx} className="flex items-start gap-0 opacity-60">
-                  <TimeCell
-                    time={stop.departure ?? stop.arrival}
-                    delay={stop.delay}
-                  />
-                  <DotOpen />
-                  <div className="flex-1 pl-3 pb-2">
-                    <span className="text-xs text-muted-foreground">
-                      {stop.station?.name ?? "–"}
-                    </span>
-                    {stop.platform && (
-                      <span className="text-xs text-muted-foreground ml-2">Pl. {stop.platform}</span>
-                    )}
+                <StopRow
+                  checkpoint={section.departure}
+                  isStart
+                  isFirst={isFirstSection}
+                />
+
+                <LegInfo section={section} />
+
+                {intermediateStops.map((stop, sIdx) => (
+                  <div key={sIdx} className="flex items-start gap-0 opacity-60">
+                    <TimeCell time={stop.departure ?? stop.arrival} delay={stop.delay} />
+                    <DotOpen />
+                    <div className="flex-1 pl-3 pb-2">
+                      <span className="text-xs text-muted-foreground">{stop.station?.name ?? "–"}</span>
+                      {stop.platform && (
+                        <span className="text-xs text-muted-foreground ml-2">Pl. {stop.platform}</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
 
-              {/* Arrival stop */}
-              <StopRow
-                checkpoint={section.arrival}
-                isEnd
-                isLast={isLastSection}
-              />
-            </div>
-          );
+                <StopRow
+                  checkpoint={section.arrival}
+                  isEnd
+                  isLast={isLastSection}
+                />
+              </div>
+            );
+          }
+
+          return null;
         })}
       </div>
     </div>
