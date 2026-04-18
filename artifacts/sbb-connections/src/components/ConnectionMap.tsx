@@ -31,6 +31,7 @@ const departureIcon = makeIcon("#16a34a", 18);
 const arrivalIcon = makeIcon("#dc2626", 18);
 const transferIcon = makeIcon("#d97706", 16);
 const passingIcon = makeIcon("#94a3b8", 10);
+const walkIcon = makeIcon("#f59e0b", 12);
 
 interface StopPoint {
   lat: number;
@@ -39,7 +40,14 @@ interface StopPoint {
   time?: string | null;
   platform?: string | null;
   delay?: number | null;
-  type: "departure" | "arrival" | "transfer" | "passing";
+  type: "departure" | "arrival" | "transfer" | "passing" | "walk-start" | "walk-end";
+}
+
+interface WalkSegment {
+  start: [number, number];
+  end: [number, number];
+  duration: number | null;
+  distance: number | null;
 }
 
 function formatTime(iso: string | null | undefined) {
@@ -113,6 +121,23 @@ function extractStops(connection: Connection): StopPoint[] {
   return stops;
 }
 
+function extractWalkSegments(connection: Connection): WalkSegment[] {
+  const walks: WalkSegment[] = [];
+
+  for (const section of connection.sections) {
+    if (section.walk && !section.journey && hasCoords(section.departure) && hasCoords(section.arrival)) {
+      walks.push({
+        start: [section.departure.station.coordinate.x!, section.departure.station.coordinate.y!],
+        end: [section.arrival.station.coordinate.x!, section.arrival.station.coordinate.y!],
+        duration: section.walk.duration || null,
+        distance: section.walk.distance || null,
+      });
+    }
+  }
+
+  return walks;
+}
+
 function FitBounds({ stops }: { stops: StopPoint[] }) {
   const map = useMap();
   useEffect(() => {
@@ -134,6 +159,7 @@ interface ConnectionMapProps {
 
 export function ConnectionMap({ connection, className = "" }: ConnectionMapProps) {
   const stops = extractStops(connection);
+  const walks = extractWalkSegments(connection);
   const routePoints: [number, number][] = stops.map((s) => [s.lat, s.lng]);
 
   const center: [number, number] =
@@ -145,6 +171,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
     if (type === "departure") return departureIcon;
     if (type === "arrival") return arrivalIcon;
     if (type === "transfer") return transferIcon;
+    if (type === "walk-start" || type === "walk-end") return walkIcon;
     return passingIcon;
   }
 
@@ -164,13 +191,29 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           maxZoom={19}
         />
 
-        {/* Route polyline */}
+        {/* Route polyline for transit */}
         {routePoints.length > 1 && (
           <Polyline
             positions={routePoints}
             pathOptions={{ color: "#dc2626", weight: 3, opacity: 0.85, dashArray: undefined }}
           />
         )}
+
+        {/* Walking route polylines */}
+        {walks.map((walk, i) => (
+          <Polyline
+            key={`walk-${i}`}
+            positions={[walk.start, walk.end]}
+            pathOptions={{ 
+              color: "#f59e0b", 
+              weight: 3, 
+              opacity: 0.85, 
+              dashArray: "5, 5",
+              lineCap: "round",
+              lineJoin: "round"
+            }}
+          />
+        ))}
 
         {/* Stop markers */}
         {stops.map((stop, i) => (
