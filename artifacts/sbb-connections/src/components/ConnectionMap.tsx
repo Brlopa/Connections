@@ -185,11 +185,11 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         scrollWheelZoom={true}
       >
         {/* Swiss federal mapping tiles (swisstopo) — same source as map.sbb.ch */}
-        <TileLayer
-          url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.leichte-basiskarte-farbe/default/current/3857/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.swisstopo.admin.ch/" target="_blank">swisstopo</a>'
-          maxZoom={19}
-        />
+              <TileLayer
+        url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg"
+        attribution='&copy; <a href="https://www.swisstopo.admin.ch/" target="_blank">swisstopo</a>'
+        maxZoom={19}
+      />
 
         {/* Route polyline for transit */}
         {routePoints.length > 1 && (
