@@ -1,0 +1,26 @@
+/* MapLibre GL Popup Styling */
+.maplibregl-popup-content {
+  padding: 10px 12px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-family: inherit;
+}
+
+.maplibregl-popup-close-button {
+  padding: 4px;
+  right: 4px;
+  top: 4px;
+}
+
+/* Marker styling */
+.maplibregl-marker {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.maplibregl-marker > * {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
