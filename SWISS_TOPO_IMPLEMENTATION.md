@@ -23,10 +23,11 @@ The `ConnectionMap` component has been updated to use **Swiss Topo Vector Tiles*
 ### 4. **Dependencies Added**
 ```json
 {
-  "maplibre-gl": "^4.7.0",
-  "@types/maplibre-gl": "^9.20.2"
+  "maplibre-gl": "^4.7.0"
 }
 ```
+
+Note: MapLibre GL includes built-in TypeScript types, so no separate `@types` package is needed.
 
 ## Implementation Details
 
