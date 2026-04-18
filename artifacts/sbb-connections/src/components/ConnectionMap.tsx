@@ -1,9 +1,8 @@
 import { useEffect } from "react";
-import { MapContainer, Marker, Popup, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
 import L from "leaflet";
 import { format, parseISO } from "date-fns";
 import type { Connection, Checkpoint } from "@workspace/api-client-react/src/generated/api.schemas";
-import "@maplibre/maplibre-gl-leaflet";
 
 // Fix leaflet default icon paths broken by Vite bundling
 import markerIconUrl from "leaflet/dist/images/marker-icon.png";
@@ -33,26 +32,6 @@ const arrivalIcon = makeIcon("#dc2626", 18);
 const transferIcon = makeIcon("#d97706", 16);
 const passingIcon = makeIcon("#94a3b8", 10);
 const walkIcon = makeIcon("#f59e0b", 12);
-
-// SwisstopoVectorLayer component using MapLibre
-function SwisstopoVectorLayer() {
-  const map = useMap();
-
-  useEffect(() => {
-    const vectorLayer = L.maplibreGL({
-      style: "https://vectortiles.geo.admin.ch/styles/ch.swisstopo.basemap.vt/style.json",
-      attribution: '&copy; <a href="https://www.swisstopo.admin.ch/" target="_blank">swisstopo</a>',
-    });
-
-    vectorLayer.addTo(map);
-
-    return () => {
-      map.removeLayer(vectorLayer);
-    };
-  }, [map]);
-
-  return null;
-}
 
 interface StopPoint {
   lat: number;
@@ -205,8 +184,12 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         zoomControl={true}
         scrollWheelZoom={true}
       >
-        {/* Swiss federal mapping tiles (swisstopo) — Vector tiles with MapLibre */}
-        <SwisstopoVectorLayer />
+        {/* Swiss federal mapping tiles (swisstopo) — same source as map.sbb.ch */}
+        <TileLayer
+          url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg"
+          attribution='&copy; <a href="https://www.swisstopo.admin.ch/" target="_blank">swisstopo</a>'
+          maxZoom={19}
+        />
 
         {/* Route polyline for transit */}
         {routePoints.length > 1 && (
