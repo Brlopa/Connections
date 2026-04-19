@@ -215,3 +215,78 @@ export type GetStationboardParams = {
    */
   type?: string;
 };
+
+export interface Line {
+  /**
+   * Unique identifier for the line
+   */
+  id: string;
+  /**
+   * Line number (e.g., "S10", "BUS12")
+   */
+  number?: string | null;
+  /**
+   * Vehicle category (S, IR, RE, BUS, TRAM, etc.)
+   */
+  category?: string | null;
+  /**
+   * Transport operator name
+   */
+  operator?: string | null;
+  /**
+   * Starting station name
+   */
+  from?: string | null;
+  /**
+   * Final destination station name
+   */
+  to?: string | null;
+  /**
+   * Number of stops on the line
+   */
+  stops?: number;
+}
+
+export interface LineSearchResponse {
+  lines: Line[];
+}
+
+export interface LineDetails {
+  id: string;
+  /** @nullable */
+  number?: string | null;
+  /** @nullable */
+  category?: string | null;
+  /** @nullable */
+  categoryCode?: number | null;
+  /** @nullable */
+  operator?: string | null;
+  from?: Location;
+  to?: Location;
+  /**
+   * All stops along the route
+   */
+  passList: Checkpoint[];
+}
+
+export type SearchLinesParams = {
+  /**
+   * Search query (line number, operator name, or destination)
+   */
+  query: string;
+  /**
+   * Number of results to return
+   */
+  limit?: number;
+};
+
+export type GetLineDetailsParams = {
+  /**
+   * Line ID
+   */
+  id: string;
+  /**
+   * Date in YYYY-MM-DD format (defaults to today)
+   */
+  date?: string;
+};

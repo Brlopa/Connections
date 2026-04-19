@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
+import { useSearchLines, getSearchLinesQueryKey, useGetLineDetails, getGetLineDetailsQueryKey } from "@workspace/api-client-react";
+import { sanitizeSearchQuery, safeArray, safeString } from "@workspace/api-client-react/src/safe-utils";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,144 +10,54 @@ import { LineCard } from "@/components/LineCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { LineDetails, Line } from "@workspace/api-client-react/src/generated/api.schemas";
 
-// Mock data for demonstration
-const MOCK_LINES: Line[] = [
-  {
-    id: "1",
-    number: "S10",
-    category: "S",
-    operator: "SBB",
-    from: "Thun",
-    to: "Frick",
-    stops: 28,
-  },
-  {
-    id: "2",
-    number: "ICE1060",
-    category: "ICE",
-    operator: "SBB",
-    from: "Basel SBB",
-    to: "Zurich HB",
-    stops: 8,
-  },
-  {
-    id: "3",
-    number: "13",
-    category: "TRAM",
-    operator: "VBZ",
-    from: "Stauffacher",
-    to: "Albisgütli",
-    stops: 19,
-  },
-  {
-    id: "4",
-    number: "105",
-    category: "BUS",
-    operator: "ZVV",
-    from: "Wiedikon",
-    to: "Triemli",
-    stops: 12,
-  },
-];
-
-// Mock line details
-const MOCK_LINE_DETAILS: Record<string, LineDetails> = {
-  "1": {
-    id: "1",
-    number: "S10",
-    category: "S",
-    categoryCode: 4,
-    operator: "SBB",
-    from: {
-      id: "8500120",
-      name: "Thun",
-      type: "station",
-      coordinate: { type: "WGS84", x: 46.757, y: 7.627 },
-    },
-    to: {
-      id: "8500168",
-      name: "Frick",
-      type: "station",
-      coordinate: { type: "WGS84", x: 47.527, y: 8.094 },
-    },
-    passList: [
-      {
-        station: { id: "8500120", name: "Thun", type: "station", coordinate: { type: "WGS84", x: 46.757, y: 7.627 } },
-        departure: "2024-04-19T08:00:00Z",
-        departureTimestamp: 1713607200,
-      },
-      {
-        station: { id: "8500109", name: "Interlaken West", type: "station", coordinate: { type: "WGS84", x: 46.682, y: 7.863 } },
-        arrival: "2024-04-19T08:15:00Z",
-        departure: "2024-04-19T08:16:00Z",
-        arrivalTimestamp: 1713608100,
-        departureTimestamp: 1713608160,
-      },
-      {
-        station: { id: "8500500", name: "Meiringen", type: "station", coordinate: { type: "WGS84", x: 46.735, y: 8.307 } },
-        arrival: "2024-04-19T08:35:00Z",
-        departure: "2024-04-19T08:36:00Z",
-        arrivalTimestamp: 1713609300,
-        departureTimestamp: 1713609360,
-      },
-      {
-        station: { id: "8500380", name: "Wilnsdorf", type: "station", coordinate: { type: "WGS84", x: 46.882, y: 8.034 } },
-        arrival: "2024-04-19T09:02:00Z",
-        departure: "2024-04-19T09:03:00Z",
-        arrivalTimestamp: 1713611100,
-        departureTimestamp: 1713611160,
-      },
-      {
-        station: { id: "8500165", name: "Brugg AG", type: "station", coordinate: { type: "WGS84", x: 47.481, y: 8.208 } },
-        arrival: "2024-04-19T09:22:00Z",
-        departure: "2024-04-19T09:23:00Z",
-        arrivalTimestamp: 1713612120,
-        departureTimestamp: 1713612180,
-      },
-      {
-        station: { id: "8500168", name: "Frick", type: "station", coordinate: { type: "WGS84", x: 47.527, y: 8.094 } },
-        arrival: "2024-04-19T09:35:00Z",
-        arrivalTimestamp: 1713612900,
-      },
-    ],
-  },
-};
-
 type ExpandedView = "details" | "map" | "both";
 
 export default function LinesPage() {
   const [query, setQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [expandedView, setExpandedView] = useState<ExpandedView>("both");
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [filteredLines, setFilteredLines] = useState<Line[]>([]);
-  const [hasSearched, setHasSearched] = useState(false);
 
-  const handleSearch = async (e: React.FormEvent) => {
+  // Search for lines
+  const { data: searchData, isLoading: isSearchLoading, isError: isSearchError } = useSearchLines(
+    { query: searchQuery || "" },
+    {
+      query: {
+        enabled: !!searchQuery,
+        queryKey: getSearchLinesQueryKey({ query: searchQuery || "" }),
+        retry: 1,
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
+      },
+    }
+  );
+
+  // Get details for selected line
+  const { data: lineDetails, isLoading: isDetailsLoading, isError: isDetailsError } = useGetLineDetails(
+    { id: selectedLineId || "", date: new Date().toISOString().split("T")[0] },
+    {
+      query: {
+        enabled: !!selectedLineId,
+        queryKey: getGetLineDetailsQueryKey({ id: selectedLineId || "" }),
+        retry: 1,
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
+      },
+    }
+  );
+
+  const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
-
-    setIsLoading(true);
-    setHasSearched(true);
-
-    // Simulate API call
-    setTimeout(() => {
-      const results = MOCK_LINES.filter(
-        (line) =>
-          line.number?.includes(query) ||
-          line.operator?.includes(query) ||
-          line.from?.includes(query) ||
-          line.to?.includes(query)
-      );
-      setFilteredLines(results);
-      setSelectedLineId(null);
-      setIsLoading(false);
-    }, 500);
+    try {
+      const sanitized = sanitizeSearchQuery(query);
+      if (sanitized.length > 1) {
+        setSearchQuery(sanitized);
+        setSelectedLineId(null);
+      }
+    } catch (error) {
+      console.error("Error initiating search:", error);
+    }
   };
 
-  const getLineDetails = (lineId: string): LineDetails | null => {
-    return MOCK_LINE_DETAILS[lineId] || null;
-  };
+  const lines = safeArray<Line>(searchData?.lines) || [];
 
   return (
     <Layout>
@@ -168,8 +80,9 @@ export default function LinesPage() {
                 placeholder="Enter line number (e.g., S10, 13, 105) or operator..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                maxLength={100}
               />
-              <Button type="submit" disabled={!query.trim() || isLoading}>
+              <Button type="submit" disabled={!query.trim() || isSearchLoading}>
                 <Search className="h-4 w-4 mr-2" />
                 Search
               </Button>
@@ -177,7 +90,7 @@ export default function LinesPage() {
           </div>
 
           {/* View Options - Only show when we have search results */}
-          {hasSearched && filteredLines.length > 0 && (
+          {searchQuery && lines.length > 0 && (
             <div className="flex gap-2 pt-2">
               <Button
                 type="button"
@@ -201,7 +114,7 @@ export default function LinesPage() {
 
         {/* Results */}
         <div className="space-y-3">
-          {isLoading && (
+          {isSearchLoading && (
             <>
               <Skeleton className="h-20" />
               <Skeleton className="h-20" />
@@ -209,41 +122,78 @@ export default function LinesPage() {
             </>
           )}
 
-          {!isLoading && hasSearched && filteredLines.length === 0 && (
+          {isSearchError && !isSearchLoading && (
+            <div className="text-center py-12 bg-destructive/10 text-destructive rounded-xl border border-destructive/20 font-medium">
+              Failed to search lines. Please try again.
+            </div>
+          )}
+
+          {!isSearchLoading && !isSearchError && searchQuery && lines.length === 0 && (
             <div className="text-center py-12">
               <p className="text-muted-foreground">
-                No lines found matching "{query}". Try a different search term.
+                No lines found matching "{searchQuery}". Try a different search term.
               </p>
             </div>
           )}
 
-          {!isLoading &&
-            filteredLines.map((line) => {
-              const lineDetails = getLineDetails(line.id);
+          {!isSearchLoading &&
+            !isSearchError &&
+            lines.map((line) => {
               const isExpanded = selectedLineId === line.id;
+              const isSelected = isExpanded;
+              const details = isSelected && lineDetails ? lineDetails : null;
 
-              return lineDetails ? (
-                <LineCard
-                  key={line.id}
-                  line={lineDetails}
-                  isExpanded={isExpanded}
-                  onToggle={() => setSelectedLineId(isExpanded ? null : line.id)}
-                  expandedView={expandedView}
-                  onViewChange={setExpandedView}
-                />
-              ) : null;
+              return (
+                <div key={line.id}>
+                  {isDetailsLoading && isSelected && (
+                    <Skeleton className="h-32" />
+                  )}
+
+                  {isDetailsError && isSelected && !isDetailsLoading && (
+                    <div className="text-center py-6 bg-destructive/10 text-destructive rounded-lg border border-destructive/20 text-sm font-medium">
+                      Failed to load line details. Try again.
+                    </div>
+                  )}
+
+                  {details ? (
+                    <LineCard
+                      line={details}
+                      isExpanded={isExpanded}
+                      onToggle={() => setSelectedLineId(isExpanded ? null : line.id)}
+                      expandedView={expandedView}
+                      onViewChange={setExpandedView}
+                    />
+                  ) : (
+                    <LineCard
+                      line={{
+                        id: line.id,
+                        number: safeString(line.number),
+                        category: safeString(line.category),
+                        operator: safeString(line.operator),
+                        from: { id: "", name: safeString(line.from), type: "station", coordinate: { type: "WGS84" } },
+                        to: { id: "", name: safeString(line.to), type: "station", coordinate: { type: "WGS84" } },
+                        passList: [],
+                      }}
+                      isExpanded={isExpanded}
+                      onToggle={() => setSelectedLineId(isExpanded ? null : line.id)}
+                      expandedView={expandedView}
+                      onViewChange={setExpandedView}
+                    />
+                  )}
+                </div>
+              );
             })}
         </div>
 
         {/* Initial state - show tips */}
-        {!hasSearched && (
+        {!searchQuery && (
           <div className="bg-muted/50 rounded-lg p-6 text-center">
             <p className="text-sm text-muted-foreground mb-3">
               Enter a line number, operator name, or destination to get started.
             </p>
             <p className="text-xs text-muted-foreground">
               Try searching for: <code className="bg-background px-2 py-1 rounded">S10</code>,{" "}
-              <code className="bg-background px-2 py-1 rounded">ICE1060</code>, or{" "}
+              <code className="bg-background px-2 py-1 rounded">ICE</code>, or{" "}
               <code className="bg-background px-2 py-1 rounded">SBB</code>
             </p>
           </div>
