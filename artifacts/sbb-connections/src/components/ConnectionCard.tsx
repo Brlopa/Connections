@@ -13,21 +13,8 @@ interface ConnectionCardProps {
 }
 
 export function ConnectionCard({ connection, selected, onClick }: ConnectionCardProps) {
-  const fromTime = (() => {
-    try {
-      return connection.from.departure ? parseISO(connection.from.departure) : null;
-    } catch {
-      return null;
-    }
-  })();
-  
-  const toTime = (() => {
-    try {
-      return connection.to.arrival ? parseISO(connection.to.arrival) : null;
-    } catch {
-      return null;
-    }
-  })();
+  const fromTime = connection.from.departure ? parseISO(connection.from.departure) : null;
+  const toTime = connection.to.arrival ? parseISO(connection.to.arrival) : null;
 
   const fromDelay = connection.from.delay;
   const platform = connection.from.platform;
@@ -50,11 +37,7 @@ export function ConnectionCard({ connection, selected, onClick }: ConnectionCard
     return <TrainFront className="h-4 w-4" />;
   };
 
-<<<<<<< HEAD
-  const journeySections = (connection.sections ?? []).filter((s) => s.journey);
-=======
   const journeySections = connection.sections.filter((s) => s.journey);
->>>>>>> 89f3cb2602976635f521e878dc9655aa3ad52977
 
   return (
     <Card
