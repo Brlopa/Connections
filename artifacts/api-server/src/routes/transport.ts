@@ -342,6 +342,42 @@ router.get("/transport/lines", async (req, res): Promise<void> => {
       "St. Gallen",
       "Winterthur",
       "Chur",
+      "Zug",
+      "Solothurn",
+      "Aarau",
+      "Olten",
+      "Fribourg",
+      "Neuchâtel",
+      "Le Locle",
+      "Montreux",
+      "Martigny",
+      "Sierre",
+      "Sion",
+      "Visp",
+      "Brig",
+      "Andermatt",
+      "Altdorf",
+      "Schaffhausen",
+      "Frauenfeld",
+      "Wil",
+      "Herisau",
+      "Appenzell",
+      "Glarus",
+      "Schwyz",
+      "Stans",
+      "Sarnen",
+      "Liestal",
+      "Delémont",
+      "La Chaux-de-Fonds",
+      "Morges",
+      "Yverdon-les-Bains",
+      "Vallorbe",
+      "Mendrisio",
+      "Bellinzona",
+      "Locarno",
+      "Ascona",
+      "Airolo",
+      "Faido",
     ];
 
     const lines: Record<string, Record<string, unknown>> = {};
@@ -386,7 +422,7 @@ router.get("/transport/lines", async (req, res): Promise<void> => {
           }
         }
 
-        if (Object.keys(lines).length >= limit * 2) break;
+        if (Object.keys(lines).length >= limit * 3) break;
       } catch (e) {
         continue;
       }
@@ -426,11 +462,31 @@ router.get("/transport/line/:id", async (req, res): Promise<void> => {
       "St. Gallen",
       "Winterthur",
       "Chur",
+      "Zug",
+      "Solothurn",
+      "Aarau",
+      "Olten",
+      "Fribourg",
+      "Neuchâtel",
+      "Le Locle",
+      "Montreux",
+      "Martigny",
+      "Sierre",
+      "Sion",
+      "Visp",
+      "Brig",
+      "Andermatt",
+      "Altdorf",
+      "Schaffhausen",
+      "Frauenfeld",
+      "Wil",
+      "Herisau",
+      "Appenzell",
     ];
 
     let bestJourney: Record<string, unknown> | null = null;
-    let fromStation: Record<string, unknown> | null = null;
-    let toStation: Record<string, unknown> | null = null;
+    let fromStationName: string | null = null;
+    let toStationName: string | null = null;
     let passList: Array<Record<string, unknown>> = [];
 
     // Search for the line in stationboards
@@ -449,31 +505,14 @@ router.get("/transport/line/:id", async (req, res): Promise<void> => {
 
           if (jLineNumber === lineNumber && (!category || jCategory === category)) {
             bestJourney = journey;
-
-            const operator = (journey.operator as string) ?? "SBB";
-            const to = (journey.to as string) ?? "Unknown";
-
-            fromStation = {
-              id: null,
-              name: station,
-              type: "station",
-              score: null,
-              coordinate: null,
-            };
-
-            toStation = {
-              id: null,
-              name: to,
-              type: "station",
-              score: null,
-              coordinate: null,
-            };
+            fromStationName = station;
+            toStationName = (journey.to as string) ?? "Unknown";
 
             // Try to get more detailed route info from connections API
             try {
               const connectionsData = await fetchTransport("/connections", {
                 from: station,
-                to: to,
+                to: toStationName,
                 date: date,
                 limit: 6,
               }) as Record<string, unknown>;
@@ -491,29 +530,12 @@ router.get("/transport/line/:id", async (req, res): Promise<void> => {
                   const sLineNumber = (journey_info.number as string ?? "").toUpperCase();
                   if (sLineNumber !== lineNumber) continue;
 
-                  // Extract stops from this section
+                  // Extract stops from this section - they already have coordinates from connections API
                   const sectionPassList = (section.passList as Array<Record<string, unknown>>) ?? [];
 
                   if (sectionPassList.length > 0) {
-                    passList = sectionPassList.map((stop) => {
-                      const station_info = stop.station as Record<string, unknown> | undefined;
-                      return {
-                        station: station_info || {
-                          id: null,
-                          name: "Unknown",
-                          type: "station",
-                          coordinate: null,
-                        },
-                        arrival: stop.arrival ?? null,
-                        arrivalTimestamp: stop.arrivalTimestamp ?? null,
-                        departure: stop.departure ?? null,
-                        departureTimestamp: stop.departureTimestamp ?? null,
-                        delay: stop.delay ?? null,
-                        platform: stop.platform ?? null,
-                      };
-                    });
-
-                    if (passList.length > 0) break;
+                    passList = sectionPassList;
+                    break;
                   }
                 }
 
@@ -533,12 +555,55 @@ router.get("/transport/line/:id", async (req, res): Promise<void> => {
       }
     }
 
-    if (!bestJourney) {
+    if (!bestJourney || !fromStationName || !toStationName) {
       res.status(404).json({ error: "Line not found" });
       return;
     }
 
-    // If we didn't get detailed stops from connections, create minimal list
+    // Fetch from/to stations with full details including coordinates
+    let fromStation: Record<string, unknown> = {
+      id: null,
+      name: fromStationName,
+      type: "station",
+      coordinate: null,
+    };
+
+    let toStation: Record<string, unknown> = {
+      id: null,
+      name: toStationName,
+      type: "station",
+      coordinate: null,
+    };
+
+    try {
+      const fromLocationsData = await fetchTransport("/locations", {
+        query: fromStationName,
+        type: "station",
+      }) as Record<string, unknown>;
+
+      const fromStations = (fromLocationsData.stations as Array<Record<string, unknown>>) ?? [];
+      if (fromStations.length > 0) {
+        fromStation = fromStations[0];
+      }
+    } catch (e) {
+      // Use default if fetch fails
+    }
+
+    try {
+      const toLocationsData = await fetchTransport("/locations", {
+        query: toStationName,
+        type: "station",
+      }) as Record<string, unknown>;
+
+      const toStations = (toLocationsData.stations as Array<Record<string, unknown>>) ?? [];
+      if (toStations.length > 0) {
+        toStation = toStations[0];
+      }
+    } catch (e) {
+      // Use default if fetch fails
+    }
+
+    // If we didn't get detailed stops from connections, create minimal list with enriched stations
     if (passList.length === 0) {
       passList = [
         {
@@ -574,6 +639,7 @@ router.get("/transport/line/:id", async (req, res): Promise<void> => {
 
     res.json(result);
   } catch (err) {
+    console.error("Line details error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
