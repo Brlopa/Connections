@@ -18,6 +18,7 @@ export function ConnectionCard({ connection, selected, onClick }: ConnectionCard
 
   const fromDelay = connection.from.delay;
   const platform = connection.from.platform;
+  const sections = connection.sections ?? [];
 
   const formatDuration = (dur: string | undefined | null) => {
     if (!dur) return "";
@@ -37,7 +38,7 @@ export function ConnectionCard({ connection, selected, onClick }: ConnectionCard
     return <TrainFront className="h-4 w-4" />;
   };
 
-  const journeySections = connection.sections.filter((s) => s.journey);
+  const journeySections = sections.filter((s) => s.journey);
 
   return (
     <Card

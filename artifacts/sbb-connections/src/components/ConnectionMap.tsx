@@ -77,8 +77,9 @@ function extractStops(connection: Connection): StopPoint[] {
   }
 
   // Walk through sections
-  for (let i = 0; i < connection.sections.length; i++) {
-    const section = connection.sections[i];
+  const sections = connection.sections ?? [];
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
     const journey = section.journey;
 
     if (journey?.passList) {
@@ -89,10 +90,10 @@ function extractStops(connection: Connection): StopPoint[] {
         const lng = cp.station.coordinate.y!;
         // Skip if this is already the departure or last stop
         const isFirst = j === 0 && i === 0;
-        const isLast = j === journey.passList.length - 1 && i === connection.sections.length - 1;
+        const isLast = j === journey.passList.length - 1 && i === sections.length - 1;
         if (isFirst || isLast) continue;
         // Check if this is a transfer (last stop of this section AND not last section)
-        const isTransferPoint = j === journey.passList.length - 1 && i < connection.sections.length - 1;
+        const isTransferPoint = j === journey.passList.length - 1 && i < sections.length - 1;
         stops.push({
           lat,
           lng,
@@ -124,8 +125,9 @@ function extractStops(connection: Connection): StopPoint[] {
 
 function extractWalkSegments(connection: Connection): WalkSegment[] {
   const walks: WalkSegment[] = [];
+  const sections = connection.sections ?? [];
 
-  for (const section of connection.sections) {
+  for (const section of sections) {
     if (section.walk && !section.journey && hasCoords(section.departure) && hasCoords(section.arrival)) {
       walks.push({
         start: [section.departure.station.coordinate.x!, section.departure.station.coordinate.y!],
