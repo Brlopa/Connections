@@ -320,4 +320,223 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
   res.json(data);
 });
 
+router.get("/transport/lines", async (req, res): Promise<void> => {
+  try {
+    const query = (req.query.query as string)?.trim() ?? "";
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? 10)), 1), 100);
+
+    if (!query || query.length < 1) {
+      res.status(400).json({ error: "Query parameter required" });
+      return;
+    }
+
+    // Search for lines using DB API - try to find journeys containing the query
+    try {
+      const stationsData = await fetchDb("/locations", { query, results: 5, fuzzy: true }, 3000) as Array<Record<string, unknown>>;
+      
+      if (!Array.isArray(stationsData) || stationsData.length === 0) {
+        res.json({ lines: [] });
+        return;
+      }
+
+      const lines: Record<string, Record<string, unknown>> = {};
+
+      // Get stationboards from multiple stations to find lines matching the query
+      for (const station of stationsData.slice(0, 3)) {
+        try {
+          const stationId = station.id as string;
+          const stationName = station.name as string;
+          
+          const stationboardData = await fetchDb("/stops/" + stationId + "/departures", { results: 50, duration: 120 }, 3000) as Record<string, unknown>;
+          const departures = (stationboardData.departures as Array<Record<string, unknown>>) ?? [];
+
+          for (const dep of departures) {
+            const journey = dep.line as Record<string, unknown> | undefined;
+            if (!journey) continue;
+
+            const lineId = String(journey.id ?? "");
+            const lineNumber = String(journey.name ?? "");
+            const lineProduct = String(journey.product ?? "");
+
+            // Filter by query match
+            const matchesQuery = 
+              lineNumber.includes(query) || 
+              String(journey.operator ?? "").includes(query) ||
+              String(journey.direction ?? "").includes(query);
+
+            if (!matchesQuery && !lineNumber.match(query)) continue;
+
+            if (!lines[lineId]) {
+              lines[lineId] = {
+                id: lineId,
+                number: lineNumber,
+                category: dbProductToCategory(journey),
+                operator: journey.operator ?? "SBB",
+                from: stationName,
+                to: journey.direction ?? "Unknown",
+                stops: 0,
+              };
+            }
+          }
+
+          if (Object.keys(lines).length >= limit) break;
+        } catch (e) {
+          continue;
+        }
+      }
+
+      const linesList = Object.values(lines).slice(0, limit);
+      res.json({ lines: linesList });
+    } catch (err) {
+      // Fallback to Swiss API stationboard if DB fails
+      try {
+        const stationboardData = await fetchTransport("/stationboard", { station: query, limit: 50 }) as Record<string, unknown>;
+        const journeys = (stationboardData.stationboard as Array<Record<string, unknown>>) ?? [];
+        
+        const lines: Record<string, Record<string, unknown>> = {};
+        for (const journey of journeys) {
+          const line = journey.number as string | undefined;
+          const category = journey.category as string | undefined;
+          const to = journey.to as string | undefined;
+          const operator = journey.operator as string | undefined;
+
+          if (line && (line.includes(query) || category?.includes(query))) {
+            const lineId = `${category}-${line}`;
+            if (!lines[lineId]) {
+              lines[lineId] = {
+                id: lineId,
+                number: line,
+                category: category ?? "N/A",
+                operator: operator ?? "N/A",
+                from: query,
+                to: to ?? "Unknown",
+                stops: 0,
+              };
+            }
+          }
+        }
+
+        res.json({ lines: Object.values(lines).slice(0, limit) });
+      } catch (fallbackErr) {
+        res.json({ lines: [] });
+      }
+    }
+  } catch (err) {
+    res.status(500).json({ error: "Failed to search lines" });
+  }
+});
+
+router.get("/transport/line/:id", async (req, res): Promise<void> => {
+  try {
+    const lineId = (req.params.id as string)?.trim() ?? "";
+    const date = (req.query.date as string) ?? new Date().toISOString().split("T")[0];
+
+    if (!lineId) {
+      res.status(400).json({ error: "Line ID required" });
+      return;
+    }
+
+    // Parse the line ID (format: "CATEGORY-NUMBER" or just the ID from DB)
+    const [, lineNumber] = lineId.includes("-") ? lineId.split("-", 2) : ["", lineId];
+    const finalLineNumber = lineNumber || lineId;
+
+    try {
+      // Try to get line details from DB API
+      const locationData = await fetchDb("/locations", { query: finalLineNumber, results: 1, fuzzy: true }, 3000) as Array<Record<string, unknown>>;
+      
+      if (!Array.isArray(locationData) || locationData.length === 0) {
+        res.status(404).json({ error: "Line not found" });
+        return;
+      }
+
+      const station = locationData[0];
+      const stationId = station.id as string;
+
+      const stationboardData = await fetchDb("/stops/" + stationId + "/departures", { results: 100, duration: 240 }, 3000) as Record<string, unknown>;
+      const departures = (stationboardData.departures as Array<Record<string, unknown>>) ?? [];
+
+      // Find the specific line
+      let foundLine: Record<string, unknown> | null = null;
+      const stops: Array<Record<string, unknown>> = [];
+
+      for (const dep of departures) {
+        const journey = dep.line as Record<string, unknown> | undefined;
+        if (!journey) continue;
+
+        const jLineNumber = String(journey.name ?? "");
+        if (jLineNumber !== finalLineNumber) continue;
+
+        foundLine = journey;
+
+        // Get complete journey info
+        const journeyId = dep.id as string | undefined;
+        if (journeyId) {
+          try {
+            const journeyData = await fetchDb("/journeys/" + journeyId, {}, 3000) as Record<string, unknown>;
+            const legs = (journeyData.legs as Array<Record<string, unknown>>) ?? [];
+            
+            for (const leg of legs) {
+              const stopovers = (leg.stopovers as Array<Record<string, unknown>>) ?? [];
+              for (const stopover of stopovers) {
+                const stop = (stopover.stop ?? stopover.station) as Record<string, unknown> | undefined;
+                if (!stop) continue;
+
+                const stopData = {
+                  station: normalizeDbLocation(stop),
+                  arrival: (stopover.plannedArrival ?? stopover.arrival) as string | null ?? null,
+                  arrivalTimestamp: (() => {
+                    const arrStr = (stopover.plannedArrival ?? stopover.arrival) as string | undefined;
+                    return arrStr ? Math.floor(new Date(arrStr).getTime() / 1000) : null;
+                  })(),
+                  departure: (stopover.plannedDeparture ?? stopover.departure) as string | null ?? null,
+                  departureTimestamp: (() => {
+                    const depStr = (stopover.plannedDeparture ?? stopover.departure) as string | undefined;
+                    return depStr ? Math.floor(new Date(depStr).getTime() / 1000) : null;
+                  })(),
+                  delay: null,
+                  platform: stopover.departurePlatform ?? null,
+                };
+
+                // Add if not already in stops
+                if (!stops.some((s) => (s.station as Record<string, unknown>)?.name === (stopData.station as Record<string, unknown>)?.name)) {
+                  stops.push(stopData);
+                }
+              }
+            }
+          } catch (e) {
+            // Continue if journey fetch fails
+          }
+        }
+
+        if (stops.length > 0) break;
+      }
+
+      if (!foundLine || stops.length === 0) {
+        res.status(404).json({ error: "Line details not found" });
+        return;
+      }
+
+      const firstStop = stops[0] as Record<string, unknown>;
+      const lastStop = stops[stops.length - 1] as Record<string, unknown>;
+
+      const result = {
+        id: lineId,
+        number: String(foundLine.name ?? ""),
+        category: dbProductToCategory(foundLine),
+        categoryCode: 0,
+        operator: String(foundLine.operator ?? "SBB"),
+        from: firstStop?.station ?? { name: "Unknown" },
+        to: lastStop?.station ?? { name: "Unknown" },
+        passList: stops,
+      };
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch line details" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;
