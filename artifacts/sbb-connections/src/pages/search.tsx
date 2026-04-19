@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { format } from "date-fns";
 import { ArrowRightLeft, Search, Calendar, Clock, Timer } from "lucide-react";
-import { useSearchConnections, getSearchConnectionsQueryKey } from "@workspace/api-client-react";
-import { sanitizeSearchQuery, safeString, safeArray, safeNumber } from "@workspace/api-client-react/src/safe-utils";
+import { useSearchConnections, getSearchConnectionsQueryKey, sanitizeSearchQuery, safeString, safeArray, safeNumber } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { LocationSearch, type EnrichedLocation } from "@/components/LocationSearch";
 import { ConnectionCard } from "@/components/ConnectionCard";

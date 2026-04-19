@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
-import { useSearchLines, getSearchLinesQueryKey, useGetLineDetails, getGetLineDetailsQueryKey } from "@workspace/api-client-react";
-import { sanitizeSearchQuery, safeArray, safeString } from "@workspace/api-client-react/src/safe-utils";
+import { useSearchLines, getSearchLinesQueryKey, useGetLineDetails, getGetLineDetailsQueryKey, sanitizeSearchQuery, safeArray, safeString, LineDetails, Line } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LineCard } from "@/components/LineCard";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { LineDetails, Line } from "@workspace/api-client-react/src/generated/api.schemas";
 
 type ExpandedView = "details" | "map" | "both";
 

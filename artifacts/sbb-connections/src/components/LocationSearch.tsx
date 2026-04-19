@@ -1,11 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearchLocations, getSearchLocationsQueryKey } from "@workspace/api-client-react";
-import { sanitizeSearchQuery, safeArray, safeString, safeId } from "@workspace/api-client-react/src/safe-utils";
+import { useSearchLocations, getSearchLocationsQueryKey, sanitizeSearchQuery, safeArray, safeString, safeId, Location } from "@workspace/api-client-react";
 import { useDebounce } from "@/hooks/use-debounce";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MapPin, AlertCircle } from "lucide-react";
-import type { Location } from "@workspace/api-client-react/src/generated/api.schemas";
 
 export type EnrichedLocation = Location & { dbId?: string | null };
 
