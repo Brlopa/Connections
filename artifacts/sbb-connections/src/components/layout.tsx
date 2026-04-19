@@ -27,6 +27,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               Stationboard
             </Link>
+            <Link 
+              href="/lines" 
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${location === "/lines" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"}`}
+            >
+              Lines
+            </Link>
           </nav>
         </div>
       </header>

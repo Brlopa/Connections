@@ -156,6 +156,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /transport/lines:
+    get:
+      operationId: searchLines
+      tags: [transport]
+      summary: Search for public transport lines
+      description: Search for public transport lines by number or operator
+      parameters:
+        - in: query
+          name: query
+          required: true
+          schema:
+            type: string
+          description: Search query (line number, operator name, or destination)
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+          description: Number of results to return
+      responses:
+        "200":
+          description: List of matching lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineSearchResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transport/line/{id}:
+    get:
+      operationId: getLineDetails
+      tags: [transport]
+      summary: Get detailed route information for a public transport line
+      description: Returns the complete route with all stops for a specific line
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Line ID
+        - in: query
+          name: date
+          required: false
+          schema:
+            type: string
+          description: Date in YYYY-MM-DD format (defaults to today)
+      responses:
+        "200":
+          description: Line details with complete route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineDetails"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Line not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -384,3 +456,66 @@ components:
             $ref: "#/components/schemas/StationboardEntry"
       required:
         - stationboard
+
+    Line:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the line
+        number:
+          type: ["string", "null"]
+          description: Line number (e.g., "S10", "BUS12")
+        category:
+          type: ["string", "null"]
+          description: Vehicle category (S, IR, RE, BUS, TRAM, etc.)
+        operator:
+          type: ["string", "null"]
+          description: Transport operator name
+        from:
+          type: ["string", "null"]
+          description: Starting station name
+        to:
+          type: ["string", "null"]
+          description: Final destination station name
+        stops:
+          type: integer
+          description: Number of stops on the line
+      required:
+        - id
+
+    LineSearchResponse:
+      type: object
+      properties:
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/Line"
+      required:
+        - lines
+
+    LineDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        number:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        categoryCode:
+          type: ["integer", "null"]
+        operator:
+          type: ["string", "null"]
+        from:
+          $ref: "#/components/schemas/Location"
+        to:
+          $ref: "#/components/schemas/Location"
+        passList:
+          type: array
+          description: All stops along the route
+          items:
+            $ref: "#/components/schemas/Checkpoint"
+      required:
+        - id
+        - passList
