@@ -292,7 +292,7 @@ export default function SearchPage() {
               <LocationSearch
                 id="via-station"
                 label="Via (Optional)"
-                placeholder="Station or stop to travel through"
+                placeholder="Via station or stop"
                 value={viaQuery}
                 onChange={(val, loc) => {
                   setViaQuery(val);
