@@ -17,6 +17,7 @@ type ExpandedView = "details" | "map" | "both";
 type SearchParams = {
   from: string;
   to: string;
+  via?: string[];
   date: string;
   time: string;
   fromDbId?: string;
@@ -49,6 +50,9 @@ export default function SearchPage() {
   const [toQuery, setToQuery] = useState("");
   const [fromStation, setFromStation] = useState<EnrichedLocation | null>(null);
   const [toStation, setToStation] = useState<EnrichedLocation | null>(null);
+
+  const [viaQuery, setViaQuery] = useState("");
+  const [viaStation, setViaStation] = useState<EnrichedLocation | null>(null);
 
   const [date, setDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [time, setTime] = useState(format(new Date(), "HH:mm"));
@@ -89,6 +93,7 @@ export default function SearchPage() {
       const data = await searchConnections({
         from: params.from,
         to: params.to,
+        via: params.via,
         date: params.date,
         time: params.time,
         limit: 5,
@@ -181,9 +186,11 @@ export default function SearchPage() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!fromQuery || !toQuery) return;
+    const viaValue = viaStation?.name ? [viaStation.name] : (viaQuery ? [viaQuery] : undefined);
     const params: SearchParams = {
       from: fromStation?.name || fromQuery,
       to: toStation?.name || toQuery,
+      via: viaValue,   // <-- Add this line
       date,
       time,
       fromDbId: fromStation?.dbId ?? undefined,
@@ -268,6 +275,19 @@ export default function SearchPage() {
                 onChange={(val, loc) => {
                   setToQuery(val);
                   setToStation(loc ?? null);
+                }}
+              />
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-4">
+              <LocationSearch
+                id="via-station"
+                label="Via (Optional)"
+                placeholder="Station or stop to travel through"
+                value={viaQuery}
+                onChange={(val, loc) => {
+                  setViaQuery(val);
+                  setViaStation(loc ?? null);
                 }}
               />
             </div>

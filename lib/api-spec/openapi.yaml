@@ -80,6 +80,16 @@ paths:
             type: string
           description: Destination location name or ID
         - in: query
+          name: via
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Optional via locations
+        - in: query
           name: date
           required: false
           schema:
