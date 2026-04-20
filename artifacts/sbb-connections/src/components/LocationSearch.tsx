@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearchLocations, getSearchLocationsQueryKey } from "@workspace/api-client-react";
+import { useSearchLocations, getSearchLocationsQueryKey, sanitizeSearchQuery, safeArray, safeString, safeId, Location } from "@workspace/api-client-react";
 import { useDebounce } from "@/hooks/use-debounce";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin } from "lucide-react";
-import type { Location } from "@workspace/api-client-react/src/generated/api.schemas";
+import { MapPin, AlertCircle } from "lucide-react";
 
 export type EnrichedLocation = Location & { dbId?: string | null };
 
@@ -19,15 +18,27 @@ interface LocationSearchProps {
 export function LocationSearch({ label, placeholder, value, onChange, id }: LocationSearchProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState(value);
-  const debouncedQuery = useDebounce(inputValue, 300);
+  const [hasError, setHasError] = useState(false);
+  const debouncedQuery = useDebounce(sanitizeSearchQuery(inputValue), 300);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const params = { query: debouncedQuery, type: "station" };
-  const { data, isLoading } = useSearchLocations(params, {
-    query: { enabled: debouncedQuery.length > 1, queryKey: getSearchLocationsQueryKey(params) },
+  const { data, isLoading, isError } = useSearchLocations(params, {
+    query: {
+      enabled: debouncedQuery.length > 1,
+      queryKey: getSearchLocationsQueryKey(params),
+      retry: 1, // Retry once on failure
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
+    },
   });
 
-  useEffect(() => { setInputValue(value); }, [value]);
+  useEffect(() => {
+    setInputValue(value);
+  }, [value]);
+
+  useEffect(() => {
+    setHasError(isError);
+  }, [isError]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -40,13 +51,42 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
   }, []);
 
   const handleSelect = (station: EnrichedLocation) => {
-    const name = station.name || "";
-    setInputValue(name);
-    onChange(name, station);
-    setIsOpen(false);
+    try {
+      const name = safeString(station.name);
+      setInputValue(name);
+      onChange(name, {
+        ...station,
+        name: name,
+        id: safeId(station.id),
+      });
+      setIsOpen(false);
+      setHasError(false);
+    } catch (error) {
+      console.error("Error selecting station:", error);
+      setHasError(true);
+    }
   };
 
-  const stations = (data?.stations ?? []) as EnrichedLocation[];
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setInputValue(newValue);
+    onChange(newValue);
+    setHasError(false);
+  };
+
+  // Safe data extraction with fallback
+  let stations: EnrichedLocation[] = [];
+  try {
+    stations = (safeArray<Location>(data?.stations) || []).map((station) => ({
+      ...station,
+      name: safeString(station.name),
+      id: safeId(station.id),
+      type: safeString(station.type, 50),
+    })) as EnrichedLocation[];
+  } catch (error) {
+    console.error("Error processing stations data:", error);
+    setHasError(true);
+  }
 
   return (
     <div className="relative flex-1" ref={wrapperRef}>
@@ -58,39 +98,50 @@ export function LocationSearch({ label, placeholder, value, onChange, id }: Loca
         <Input
           id={id}
           value={inputValue}
-          onChange={(e) => {
-            setInputValue(e.target.value);
-            onChange(e.target.value);
-            setIsOpen(true);
-          }}
+          onChange={handleInputChange}
           onFocus={() => setIsOpen(true)}
           placeholder={placeholder}
           className="pl-10 h-12 bg-background font-medium"
           autoComplete="off"
+          maxLength={100}
+          aria-invalid={hasError}
         />
       </div>
 
       {isOpen && debouncedQuery.length > 1 && (
         <div className="absolute z-50 mt-1 w-full bg-card rounded-md border shadow-md max-h-60 overflow-auto">
-          {isLoading ? (
+          {isLoading && (
             <div className="p-4 text-sm text-center text-muted-foreground animate-pulse">
               Loading stations…
             </div>
-          ) : stations.length > 0 ? (
+          )}
+
+          {hasError && !isLoading && (
+            <div className="p-4 text-sm text-center text-destructive flex items-center justify-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>Failed to search. Try again.</span>
+            </div>
+          )}
+
+          {!isLoading && !hasError && stations.length > 0 && (
             <ul className="py-1">
               {stations.map((station) => (
                 <li
-                  key={station.id || station.name}
+                  key={station.id || station.name || Math.random()}
                   onClick={() => handleSelect(station)}
                   className="px-4 py-2 hover:bg-accent hover:text-accent-foreground cursor-pointer text-sm transition-colors flex items-center gap-2"
                 >
                   <MapPin className="h-3 w-3 text-primary/60 shrink-0" />
-                  <span className="font-medium">{station.name}</span>
+                  <span className="font-medium truncate">{station.name}</span>
                 </li>
               ))}
             </ul>
-          ) : (
-            <div className="p-4 text-sm text-center text-muted-foreground">No stations found.</div>
+          )}
+
+          {!isLoading && !hasError && stations.length === 0 && (
+            <div className="p-4 text-sm text-center text-muted-foreground">
+              No stations found. Try a different search.
+            </div>
           )}
         </div>
       )}

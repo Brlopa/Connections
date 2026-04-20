@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { format } from "date-fns";
 import { ArrowRightLeft, Search, Calendar, Clock, Timer } from "lucide-react";
-import { useSearchConnections, getSearchConnectionsQueryKey } from "@workspace/api-client-react";
+import { useSearchConnections, getSearchConnectionsQueryKey, sanitizeSearchQuery, safeString, safeArray, safeNumber } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { LocationSearch, type EnrichedLocation } from "@/components/LocationSearch";
 import { ConnectionCard } from "@/components/ConnectionCard";
@@ -42,63 +42,101 @@ export default function SearchPage() {
       query: {
         enabled: !!searchParams?.from && !!searchParams?.to,
         queryKey: getSearchConnectionsQueryKey(searchParams || { from: "", to: "" }),
+        retry: 1,
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
       },
     }
   );
 
   const handleSwap = () => {
-    const tempQuery = fromQuery;
-    const tempStation = fromStation;
-    setFromQuery(toQuery);
-    setFromStation(toStation);
-    setToQuery(tempQuery);
-    setToStation(tempStation);
+    try {
+      const tempQuery = fromQuery;
+      const tempStation = fromStation;
+      setFromQuery(toQuery);
+      setFromStation(toStation);
+      setToQuery(tempQuery);
+      setToStation(tempStation);
+    } catch (error) {
+      console.error("Error swapping stations:", error);
+    }
   };
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (fromQuery && toQuery) {
+    try {
+      // Sanitize inputs
+      const sanitizedFromQuery = sanitizeSearchQuery(fromQuery);
+      const sanitizedToQuery = sanitizeSearchQuery(toQuery);
+
+      if (!sanitizedFromQuery || !sanitizedToQuery) {
+        return;
+      }
+
       setSelectedIdx(null);
       setSearchParams({
-        from: fromStation?.name || fromQuery,
-        to: toStation?.name || toQuery,
+        from: fromStation?.name || sanitizedFromQuery,
+        to: toStation?.name || sanitizedToQuery,
         date,
         time,
         fromDbId: fromStation?.dbId ?? undefined,
         toDbId: toStation?.dbId ?? undefined,
       });
+    } catch (error) {
+      console.error("Error initiating search:", error);
     }
   };
 
   function getMs(isoOrNull: string | null | undefined, tsOrNull: number | null | undefined): number | null {
-    if (tsOrNull != null) return tsOrNull * 1000;
-    if (isoOrNull) { try { return new Date(isoOrNull).getTime(); } catch { return null; } }
+    try {
+      if (tsOrNull != null) return safeNumber(tsOrNull, 0) * 1000;
+      if (isoOrNull) {
+        const ms = new Date(safeString(isoOrNull)).getTime();
+        return Number.isFinite(ms) ? ms : null;
+      }
+    } catch {
+      return null;
+    }
     return null;
   }
 
-  const filteredConnections = (data?.connections ?? []).filter((conn) => {
-    if (minTransferTime === 0) return true;
-    const sections = conn.sections ?? [];
-    const legs = sections.filter((s) => s.journey != null);
-    for (let i = 0; i < legs.length - 1; i++) {
-      const prevArr = legs[i].arrival;
-      const nextDep = legs[i + 1].departure;
-      const arrMs = getMs(prevArr?.arrival, prevArr?.arrivalTimestamp);
-      const depMs = getMs(nextDep?.departure, nextDep?.departureTimestamp);
-      if (arrMs != null && depMs != null) {
-        const transferMins = (depMs - arrMs) / 60000;
-        if (transferMins < minTransferTime) return false;
-      }
+  const filteredConnections = (() => {
+    try {
+      const connections = safeArray(data?.connections);
+      if (minTransferTime === 0) return connections;
+
+      return connections.filter((conn) => {
+        const sections = safeArray(conn?.sections);
+        const legs = sections.filter((s) => s?.journey != null);
+
+        for (let i = 0; i < legs.length - 1; i++) {
+          const prevArr = legs[i]?.arrival;
+          const nextDep = legs[i + 1]?.departure;
+          const arrMs = getMs(prevArr?.arrival, prevArr?.arrivalTimestamp);
+          const depMs = getMs(nextDep?.departure, nextDep?.departureTimestamp);
+
+          if (arrMs != null && depMs != null) {
+            const transferMins = (depMs - arrMs) / 60000;
+            if (transferMins < minTransferTime) return false;
+          }
+        }
+        return true;
+      });
+    } catch (error) {
+      console.error("Error filtering connections:", error);
+      return [];
     }
-    return true;
-  });
+  })();
 
   const handleSelectConnection = (idx: number) => {
-    if (selectedIdx === idx) {
-      setSelectedIdx(null);
-    } else {
-      setSelectedIdx(idx);
-      setExpandedView("both");
+    try {
+      if (selectedIdx === idx) {
+        setSelectedIdx(null);
+      } else {
+        setSelectedIdx(idx);
+        setExpandedView("both");
+      }
+    } catch (error) {
+      console.error("Error selecting connection:", error);
     }
   };
 
@@ -223,17 +261,17 @@ export default function SearchPage() {
 
           {isError && (
             <div className="text-center py-12 bg-destructive/10 text-destructive rounded-xl border border-destructive/20 font-medium">
-              Could not fetch connections. Please try again.
+              Could not fetch connections. Please try a different search or try again later.
             </div>
           )}
 
-          {!isLoading && !isError && searchParams && data?.connections?.length === 0 && (
+          {!isLoading && !isError && searchParams && filteredConnections.length === 0 && (data?.connections?.length ?? 0) === 0 && (
             <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
-              No connections found for this route.
+              No connections found for this route. Try different stations or times.
             </div>
           )}
 
-          {!isLoading && !isError && data?.connections && data.connections.length > 0 && filteredConnections.length === 0 && (
+          {!isLoading && !isError && (data?.connections?.length ?? 0) > 0 && filteredConnections.length === 0 && (
             <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
               No connections with at least {minTransferTime} min transfer time found. Try reducing the minimum.
             </div>
@@ -242,66 +280,73 @@ export default function SearchPage() {
           {!isLoading && !isError && filteredConnections.length > 0 && (
             <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <h2 className="text-xl font-bold tracking-tight mb-4">
-                Connections from {data?.from?.name || searchParams?.from} to {data?.to?.name || searchParams?.to}
+                Connections from {safeString(data?.from?.name || searchParams?.from)} to {safeString(data?.to?.name || searchParams?.to)}
               </h2>
 
-              {filteredConnections.map((connection, idx) => (
-                <div key={idx} className="space-y-2">
-                  <ConnectionCard
-                    connection={connection}
-                    selected={selectedIdx === idx}
-                    onClick={() => handleSelectConnection(idx)}
-                  />
+              {filteredConnections.map((connection, idx) => {
+                try {
+                  return (
+                    <div key={idx} className="space-y-2">
+                      <ConnectionCard
+                        connection={connection}
+                        selected={selectedIdx === idx}
+                        onClick={() => handleSelectConnection(idx)}
+                      />
 
-                  {selectedIdx === idx && (
-                    <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-2 pl-1">
-                      <div className="flex items-center gap-1 text-xs">
-                        {(["both", "details", "map"] as ExpandedView[]).map((view) => (
-                          <button
-                            key={view}
-                            onClick={() => setExpandedView(view)}
-                            className={`px-3 py-1.5 rounded-md font-medium transition-colors capitalize
-                              ${expandedView === view
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground hover:bg-muted/80"
-                              }`}
-                          >
-                            {view === "both" ? "Details + Map" : view === "details" ? "Journey details" : "Map"}
-                          </button>
-                        ))}
-                      </div>
-
-                      {(expandedView === "details" || expandedView === "both") && (
-                        <JourneyTimeline
-                          connection={connection}
-                          onShowMap={() => setExpandedView("map")}
-                        />
-                      )}
-
-                      {(expandedView === "map" || expandedView === "both") && (
-                        <div className="rounded-xl border border-border overflow-hidden shadow-sm">
-                          <div className="bg-card px-4 py-2 border-b border-border flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                            <span className="font-semibold text-foreground">Route map</span>
-                            <span className="flex items-center gap-1.5">
-                              <span className="inline-block w-3 h-3 rounded-full bg-green-600 border-2 border-white shadow" />
-                              Departure
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                              <span className="inline-block w-3 h-3 rounded-full bg-amber-500 border-2 border-white shadow" />
-                              Change here
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                              <span className="inline-block w-3 h-3 rounded-full bg-red-600 border-2 border-white shadow" />
-                              Arrival
-                            </span>
+                      {selectedIdx === idx && (
+                        <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-2 pl-1">
+                          <div className="flex items-center gap-1 text-xs">
+                            {(["both", "details", "map"] as ExpandedView[]).map((view) => (
+                              <button
+                                key={view}
+                                onClick={() => setExpandedView(view)}
+                                className={`px-3 py-1.5 rounded-md font-medium transition-colors capitalize
+                                  ${expandedView === view
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                                  }`}
+                              >
+                                {view === "both" ? "Details + Map" : view === "details" ? "Journey details" : "Map"}
+                              </button>
+                            ))}
                           </div>
-                          <ConnectionMap connection={connection} />
+
+                          {(expandedView === "details" || expandedView === "both") && (
+                            <JourneyTimeline
+                              connection={connection}
+                              onShowMap={() => setExpandedView("map")}
+                            />
+                          )}
+
+                          {(expandedView === "map" || expandedView === "both") && (
+                            <div className="rounded-xl border border-border overflow-hidden shadow-sm">
+                              <div className="bg-card px-4 py-2 border-b border-border flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                                <span className="font-semibold text-foreground">Route map</span>
+                                <span className="flex items-center gap-1.5">
+                                  <span className="inline-block w-3 h-3 rounded-full bg-green-600 border-2 border-white shadow" />
+                                  Departure
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                  <span className="inline-block w-3 h-3 rounded-full bg-amber-500 border-2 border-white shadow" />
+                                  Change here
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                  <span className="inline-block w-3 h-3 rounded-full bg-red-600 border-2 border-white shadow" />
+                                  Arrival
+                                </span>
+                              </div>
+                              <ConnectionMap connection={connection} />
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  );
+                } catch (error) {
+                  console.error("Error rendering connection:", error);
+                  return null;
+                }
+              })}
             </div>
           )}
         </div>

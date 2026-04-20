@@ -320,4 +320,262 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
   res.json(data);
 });
 
+router.get("/transport/lines", async (req, res): Promise<void> => {
+  try {
+    const query = (req.query.query as string)?.trim().toUpperCase() ?? "";
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? 10)), 1), 100);
+
+    if (!query || query.length < 1) {
+      res.status(400).json({ error: "Query parameter required" });
+      return;
+    }
+
+    // Major Swiss stations to search for lines
+    const majorStations = [
+      "Zürich HB",
+      "Bern",
+      "Basel SBB",
+      "Genève-Cornavin",
+      "Lausanne",
+      "Luzern",
+      "Lugano",
+      "St. Gallen",
+      "Winterthur",
+      "Chur",
+    ];
+
+    const lines: Record<string, Record<string, unknown>> = {};
+
+    // Get stationboards from multiple major stations
+    for (const station of majorStations) {
+      try {
+        const stationboardData = await fetchTransport("/stationboard", {
+          station,
+          limit: 100,
+        }) as Record<string, unknown>;
+
+        const journeys = (stationboardData.stationboard as Array<Record<string, unknown>>) ?? [];
+
+        for (const journey of journeys) {
+          const lineNumber = (journey.number as string ?? "").toUpperCase();
+          const category = (journey.category as string ?? "").toUpperCase();
+          const to = journey.to as string;
+          const operator = (journey.operator as string) ?? "SBB";
+
+          // Match query against line number, category, operator, or destination
+          const matchesQuery =
+            lineNumber.includes(query) ||
+            category.includes(query) ||
+            operator.toUpperCase().includes(query) ||
+            (to && to.toUpperCase().includes(query));
+
+          if (!matchesQuery) continue;
+
+          const lineId = `${category}-${lineNumber}`;
+
+          if (!lines[lineId]) {
+            lines[lineId] = {
+              id: lineId,
+              number: lineNumber,
+              category: category || "N/A",
+              operator: operator,
+              from: station,
+              to: to || "Unknown",
+              stops: 0,
+            };
+          }
+        }
+
+        if (Object.keys(lines).length >= limit * 2) break;
+      } catch (e) {
+        continue;
+      }
+    }
+
+    const linesList = Object.values(lines).slice(0, limit);
+    res.json({ lines: linesList });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to search lines" });
+  }
+});
+
+router.get("/transport/line/:id", async (req, res): Promise<void> => {
+  try {
+    const lineId = (req.params.id as string)?.trim() ?? "";
+    const date = (req.query.date as string) ?? new Date().toISOString().split("T")[0];
+
+    if (!lineId) {
+      res.status(400).json({ error: "Line ID required" });
+      return;
+    }
+
+    // Parse line ID (format: "CATEGORY-NUMBER")
+    const [category, lineNumber] = lineId.includes("-")
+      ? lineId.split("-", 2)
+      : ["", lineId];
+
+    // Major Swiss stations to find the line
+    const majorStations = [
+      "Zürich HB",
+      "Bern",
+      "Basel SBB",
+      "Genève-Cornavin",
+      "Lausanne",
+      "Luzern",
+      "Lugano",
+      "St. Gallen",
+      "Winterthur",
+      "Chur",
+    ];
+
+    let bestJourney: Record<string, unknown> | null = null;
+    let fromStation: Record<string, unknown> | null = null;
+    let toStation: Record<string, unknown> | null = null;
+    let passList: Array<Record<string, unknown>> = [];
+
+    // Search for the line in stationboards
+    for (const station of majorStations) {
+      try {
+        const stationboardData = await fetchTransport("/stationboard", {
+          station,
+          limit: 100,
+        }) as Record<string, unknown>;
+
+        const journeys = (stationboardData.stationboard as Array<Record<string, unknown>>) ?? [];
+
+        for (const journey of journeys) {
+          const jLineNumber = (journey.number as string ?? "").toUpperCase();
+          const jCategory = (journey.category as string ?? "").toUpperCase();
+
+          if (jLineNumber === lineNumber && (!category || jCategory === category)) {
+            bestJourney = journey;
+
+            const operator = (journey.operator as string) ?? "SBB";
+            const to = (journey.to as string) ?? "Unknown";
+
+            fromStation = {
+              id: null,
+              name: station,
+              type: "station",
+              score: null,
+              coordinate: null,
+            };
+
+            toStation = {
+              id: null,
+              name: to,
+              type: "station",
+              score: null,
+              coordinate: null,
+            };
+
+            // Try to get more detailed route info from connections API
+            try {
+              const connectionsData = await fetchTransport("/connections", {
+                from: station,
+                to: to,
+                date: date,
+                limit: 6,
+              }) as Record<string, unknown>;
+
+              const connections = (connectionsData.connections as Array<Record<string, unknown>>) ?? [];
+
+              // Find connection with matching line
+              for (const connection of connections) {
+                const sections = (connection.sections as Array<Record<string, unknown>>) ?? [];
+
+                for (const section of sections) {
+                  const journey_info = section.journey as Record<string, unknown> | undefined;
+                  if (!journey_info) continue;
+
+                  const sLineNumber = (journey_info.number as string ?? "").toUpperCase();
+                  if (sLineNumber !== lineNumber) continue;
+
+                  // Extract stops from this section
+                  const sectionPassList = (section.passList as Array<Record<string, unknown>>) ?? [];
+
+                  if (sectionPassList.length > 0) {
+                    passList = sectionPassList.map((stop) => {
+                      const station_info = stop.station as Record<string, unknown> | undefined;
+                      return {
+                        station: station_info || {
+                          id: null,
+                          name: "Unknown",
+                          type: "station",
+                          coordinate: null,
+                        },
+                        arrival: stop.arrival ?? null,
+                        arrivalTimestamp: stop.arrivalTimestamp ?? null,
+                        departure: stop.departure ?? null,
+                        departureTimestamp: stop.departureTimestamp ?? null,
+                        delay: stop.delay ?? null,
+                        platform: stop.platform ?? null,
+                      };
+                    });
+
+                    if (passList.length > 0) break;
+                  }
+                }
+
+                if (passList.length > 0) break;
+              }
+            } catch (connErr) {
+              // Connection lookup failed, continue with basic info
+            }
+
+            if (passList.length > 0) break;
+          }
+        }
+
+        if (passList.length > 0) break;
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (!bestJourney) {
+      res.status(404).json({ error: "Line not found" });
+      return;
+    }
+
+    // If we didn't get detailed stops from connections, create minimal list
+    if (passList.length === 0) {
+      passList = [
+        {
+          station: fromStation,
+          departure: bestJourney.departure ?? null,
+          departureTimestamp: bestJourney.departureTimestamp ?? null,
+          delay: null,
+          platform: (bestJourney.departureMode as Record<string, unknown>)?.platform ?? null,
+        },
+        {
+          station: toStation,
+          arrival: bestJourney.arrival ?? null,
+          arrivalTimestamp: bestJourney.arrivalTimestamp ?? null,
+          delay: null,
+          platform: null,
+        },
+      ];
+    }
+
+    const jCategory = (bestJourney.category as string ?? "").toUpperCase();
+    const jNumber = (bestJourney.number as string ?? "").toUpperCase();
+
+    const result = {
+      id: lineId,
+      number: jNumber,
+      category: jCategory,
+      categoryCode: 0,
+      operator: (bestJourney.operator as string) ?? "SBB",
+      from: fromStation,
+      to: toStation,
+      passList: passList,
+    };
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;
