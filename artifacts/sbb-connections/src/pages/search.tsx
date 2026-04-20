@@ -243,47 +243,56 @@ export default function SearchPage() {
         {/* Search form */}
         <div className="bg-card border rounded-xl p-4 md:p-6 shadow-sm">
           <form onSubmit={handleSearch} className="space-y-4">
-            <div className="flex flex-col md:flex-row items-end gap-4">
-              <LocationSearch
-                id="from-station"
-                label="From"
-                placeholder="Station or stop"
-                value={fromQuery}
-                onChange={(val, loc) => {
-                  setFromQuery(val);
-                  setFromStation(loc ?? null);
-                }}
-              />
+            {/* Stations Block */}
+            <div className="flex flex-col md:flex-row md:items-end gap-2 md:gap-4 relative">
+              <div className="w-full flex-1">
+                <LocationSearch
+                  id="from-station"
+                  label="From"
+                  placeholder="Station or stop"
+                  value={fromQuery}
+                  onChange={(val, loc) => {
+                    setFromQuery(val);
+                    setFromStation(loc ?? null);
+                  }}
+                />
+              </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="shrink-0 rounded-full h-10 w-10 mb-1"
-                onClick={handleSwap}
-                title="Swap stations"
-                data-testid="button-swap"
-              >
-                <ArrowRightLeft className="h-4 w-4" />
-              </Button>
+              {/* Swap Button: Centered and rotated on mobile, normal on desktop */}
+              <div className="flex justify-center z-10 -my-3 md:my-0 md:mb-1 md:-mx-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0 rounded-full h-10 w-10 rotate-90 md:rotate-0 bg-background shadow-sm md:shadow-none"
+                  onClick={handleSwap}
+                  title="Swap stations"
+                  data-testid="button-swap"
+                >
+                  <ArrowRightLeft className="h-4 w-4" />
+                </Button>
+              </div>
 
-              <LocationSearch
-                id="to-station"
-                label="To"
-                placeholder="Station or stop"
-                value={toQuery}
-                onChange={(val, loc) => {
-                  setToQuery(val);
-                  setToStation(loc ?? null);
-                }}
-              />
+              <div className="w-full flex-1">
+                <LocationSearch
+                  id="to-station"
+                  label="To"
+                  placeholder="Station or stop"
+                  value={toQuery}
+                  onChange={(val, loc) => {
+                    setToQuery(val);
+                    setToStation(loc ?? null);
+                  }}
+                />
+              </div>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-4">
+            {/* Via Field */}
+            <div className="w-full pt-2">
               <LocationSearch
                 id="via-station"
                 label="Via (Optional)"
-                placeholder="Via statio or stop"
+                placeholder="Station or stop to travel through"
                 value={viaQuery}
                 onChange={(val, loc) => {
                   setViaQuery(val);
@@ -292,8 +301,9 @@ export default function SearchPage() {
               />
             </div>
 
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="flex-1 space-y-1.5">
+            {/* Options Block */}
+            <div className="grid grid-cols-2 md:flex md:flex-row gap-4 pt-2">
+              <div className="space-y-1.5 md:flex-1">
                 <Label htmlFor="date" className="text-sm font-semibold text-muted-foreground">Date</Label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -303,11 +313,12 @@ export default function SearchPage() {
                     data-testid="input-date"
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    className="pl-10 h-12 bg-background font-medium"
+                    className="pl-10 h-12 bg-background font-medium w-full"
                   />
                 </div>
               </div>
-              <div className="flex-1 space-y-1.5">
+              
+              <div className="space-y-1.5 md:flex-1">
                 <Label htmlFor="time" className="text-sm font-semibold text-muted-foreground">Time</Label>
                 <div className="relative">
                   <Clock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -317,13 +328,14 @@ export default function SearchPage() {
                     data-testid="input-time"
                     value={time}
                     onChange={(e) => setTime(e.target.value)}
-                    className="pl-10 h-12 bg-background font-medium"
+                    className="pl-10 h-12 bg-background font-medium w-full"
                   />
                 </div>
               </div>
-              <div className="flex-1 space-y-1.5">
+
+              <div className="col-span-2 space-y-1.5 md:col-span-1 md:flex-1">
                 <Label htmlFor="min-transfer" className="text-sm font-semibold text-muted-foreground">
-                  Min. transfer time
+                  Min. transfer
                 </Label>
                 <div className="relative">
                   <Timer className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
