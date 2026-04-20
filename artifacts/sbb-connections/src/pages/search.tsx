@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { format } from "date-fns";
-import { ArrowRightLeft, Search, Calendar, Clock, Timer } from "lucide-react";
-import { useSearchConnections, getSearchConnectionsQueryKey } from "@workspace/api-client-react";
+import { ArrowRightLeft, Search, Calendar, Clock, Timer, ChevronDown, Loader2 } from "lucide-react";
+import { searchConnections } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { LocationSearch, type EnrichedLocation } from "@/components/LocationSearch";
 import { ConnectionCard } from "@/components/ConnectionCard";
@@ -10,6 +10,7 @@ import { JourneyTimeline } from "@/components/JourneyTimeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { Connection } from "@workspace/api-client-react/src/generated/api.schemas";
 
 type ExpandedView = "details" | "map" | "both";
 
@@ -22,6 +23,27 @@ type SearchParams = {
   toDbId?: string;
 };
 
+function getMs(isoOrNull: string | null | undefined, tsOrNull: number | null | undefined): number | null {
+  if (tsOrNull != null) return tsOrNull * 1000;
+  if (isoOrNull) { try { return new Date(isoOrNull).getTime(); } catch { return null; } }
+  return null;
+}
+
+/** Extract the departure time of the last connection as HH:MM and its date */
+function getLastDepartureDateTime(connections: Connection[]): { date: string; time: string } | null {
+  if (connections.length === 0) return null;
+  const last = connections[connections.length - 1];
+  const sections = last.sections ?? [];
+  const dep = sections[0]?.departure;
+  const ts = getMs(dep?.departure, dep?.departureTimestamp);
+  if (!ts) return null;
+  const d = new Date(ts + 60_000); // add 1 minute to avoid duplicate
+  return {
+    date: format(d, "yyyy-MM-dd"),
+    time: format(d, "HH:mm"),
+  };
+}
+
 export default function SearchPage() {
   const [fromQuery, setFromQuery] = useState("");
   const [toQuery, setToQuery] = useState("");
@@ -33,18 +55,119 @@ export default function SearchPage() {
   const [minTransferTime, setMinTransferTime] = useState(0);
 
   const [searchParams, setSearchParams] = useState<SearchParams | null>(null);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [fromLoc, setFromLoc] = useState<unknown>(null);
+  const [toLoc, setToLoc] = useState<unknown>(null);
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isError, setIsError] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+
+  // Track the "next page" time cursor
+  const [nextPageDateTime, setNextPageDateTime] = useState<{ date: string; time: string } | null>(null);
+  const [canLoadMore, setCanLoadMore] = useState(false);
+
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [expandedView, setExpandedView] = useState<ExpandedView>("both");
 
-  const { data, isLoading, isError } = useSearchConnections(
-    searchParams || { from: "", to: "" },
-    {
-      query: {
-        enabled: !!searchParams?.from && !!searchParams?.to,
-        queryKey: getSearchConnectionsQueryKey(searchParams || { from: "", to: "" }),
-      },
+  // Sentinel element for intersection observer
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadMoreInProgress = useRef(false);
+
+  // ── fetch helpers ──────────────────────────────────────────────
+
+  const fetchConnections = useCallback(async (params: SearchParams, append = false) => {
+    if (append) {
+      setIsLoadingMore(true);
+    } else {
+      setIsLoading(true);
+      setIsError(false);
     }
-  );
+
+    try {
+      const data = await searchConnections({
+        from: params.from,
+        to: params.to,
+        date: params.date,
+        time: params.time,
+        limit: 5,
+        fromDbId: params.fromDbId,
+        toDbId: params.toDbId,
+      });
+
+      const newConns = data.connections ?? [];
+
+      if (append) {
+        setConnections(prev => {
+          // Deduplicate by departure timestamp
+          const existingTs = new Set(prev.map(c => {
+            const sec = c.sections?.[0]?.departure;
+            return getMs(sec?.departure, sec?.departureTimestamp);
+          }));
+          const deduped = newConns.filter(c => {
+            const sec = c.sections?.[0]?.departure;
+            const ts = getMs(sec?.departure, sec?.departureTimestamp);
+            return ts === null || !existingTs.has(ts);
+          });
+          return [...prev, ...deduped];
+        });
+      } else {
+        setConnections(newConns);
+        setFromLoc(data.from ?? null);
+        setToLoc(data.to ?? null);
+        setSelectedIdx(null);
+      }
+
+      // Set up next page cursor
+      if (newConns.length > 0) {
+        const cursor = getLastDepartureDateTime(newConns);
+        setNextPageDateTime(cursor);
+        setCanLoadMore(newConns.length >= 3); // if we got results, more likely exist
+      } else {
+        setCanLoadMore(false);
+      }
+    } catch {
+      if (!append) setIsError(true);
+      setCanLoadMore(false);
+    } finally {
+      setIsLoading(false);
+      setIsLoadingMore(false);
+      loadMoreInProgress.current = false;
+    }
+  }, []);
+
+  // ── load more when sentinel is visible ────────────────────────
+
+  const loadMore = useCallback(async () => {
+    if (!searchParams || !nextPageDateTime || !canLoadMore || loadMoreInProgress.current) return;
+    loadMoreInProgress.current = true;
+    const nextParams: SearchParams = {
+      ...searchParams,
+      date: nextPageDateTime.date,
+      time: nextPageDateTime.time,
+    };
+    await fetchConnections(nextParams, true);
+  }, [searchParams, nextPageDateTime, canLoadMore, fetchConnections]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && canLoadMore && !isLoadingMore && !isLoading) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: "200px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [canLoadMore, isLoadingMore, isLoading, loadMore]);
+
+  // ── search handler ─────────────────────────────────────────────
 
   const handleSwap = () => {
     const tempQuery = fromQuery;
@@ -57,26 +180,26 @@ export default function SearchPage() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (fromQuery && toQuery) {
-      setSelectedIdx(null);
-      setSearchParams({
-        from: fromStation?.name || fromQuery,
-        to: toStation?.name || toQuery,
-        date,
-        time,
-        fromDbId: fromStation?.dbId ?? undefined,
-        toDbId: toStation?.dbId ?? undefined,
-      });
-    }
+    if (!fromQuery || !toQuery) return;
+    const params: SearchParams = {
+      from: fromStation?.name || fromQuery,
+      to: toStation?.name || toQuery,
+      date,
+      time,
+      fromDbId: fromStation?.dbId ?? undefined,
+      toDbId: toStation?.dbId ?? undefined,
+    };
+    setSearchParams(params);
+    setHasSearched(true);
+    setConnections([]);
+    setCanLoadMore(false);
+    setNextPageDateTime(null);
+    fetchConnections(params, false);
   };
 
-  function getMs(isoOrNull: string | null | undefined, tsOrNull: number | null | undefined): number | null {
-    if (tsOrNull != null) return tsOrNull * 1000;
-    if (isoOrNull) { try { return new Date(isoOrNull).getTime(); } catch { return null; } }
-    return null;
-  }
+  // ── filtering ─────────────────────────────────────────────────
 
-  const filteredConnections = (data?.connections ?? []).filter((conn) => {
+  const filteredConnections = connections.filter((conn) => {
     if (minTransferTime === 0) return true;
     const sections = conn.sections ?? [];
     const legs = sections.filter((s) => s.journey != null);
@@ -101,6 +224,11 @@ export default function SearchPage() {
       setExpandedView("both");
     }
   };
+
+  // ── render ─────────────────────────────────────────────────────
+
+  const fromLocTyped = fromLoc as { name?: string } | null;
+  const toLocTyped = toLoc as { name?: string } | null;
 
   return (
     <Layout>
@@ -202,18 +330,23 @@ export default function SearchPage() {
             <Button
               type="submit"
               className="w-full h-12 text-base font-bold"
-              disabled={!fromQuery || !toQuery}
+              disabled={!fromQuery || !toQuery || isLoading}
               data-testid="button-search"
             >
-              <Search className="mr-2 h-5 w-5" />
+              {isLoading ? (
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              ) : (
+                <Search className="mr-2 h-5 w-5" />
+              )}
               Search
             </Button>
           </form>
         </div>
 
         {/* Results */}
-        <div className="space-y-4 min-h-[400px]">
-          {isLoading && (
+        <div className="space-y-4">
+          {/* Initial loading skeletons */}
+          {isLoading && connections.length === 0 && (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
                 <div key={i} className="h-32 bg-card/50 animate-pulse rounded-xl border border-border" />
@@ -227,26 +360,26 @@ export default function SearchPage() {
             </div>
           )}
 
-          {!isLoading && !isError && searchParams && data?.connections?.length === 0 && (
+          {!isLoading && !isError && hasSearched && connections.length === 0 && (
             <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
               No connections found for this route.
             </div>
           )}
 
-          {!isLoading && !isError && data?.connections && data.connections.length > 0 && filteredConnections.length === 0 && (
+          {!isLoading && !isError && filteredConnections.length === 0 && connections.length > 0 && (
             <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
               No connections with at least {minTransferTime} min transfer time found. Try reducing the minimum.
             </div>
           )}
 
-          {!isLoading && !isError && filteredConnections.length > 0 && (
+          {filteredConnections.length > 0 && (
             <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <h2 className="text-xl font-bold tracking-tight mb-4">
-                Connections from {data?.from?.name || searchParams?.from} to {data?.to?.name || searchParams?.to}
+                Connections from {fromLocTyped?.name || searchParams?.from} to {toLocTyped?.name || searchParams?.to}
               </h2>
 
               {filteredConnections.map((connection, idx) => (
-                <div key={idx} className="space-y-2">
+                <div key={`${idx}-${(connection.sections?.[0]?.departure?.departureTimestamp ?? idx)}`} className="space-y-2">
                   <ConnectionCard
                     connection={connection}
                     selected={selectedIdx === idx}
@@ -302,6 +435,28 @@ export default function SearchPage() {
                   )}
                 </div>
               ))}
+
+              {/* Sentinel for infinite scroll — invisible, sits below the last card */}
+              <div ref={sentinelRef} className="h-4" aria-hidden="true" />
+
+              {/* Loading more indicator */}
+              {isLoadingMore && (
+                <div className="flex items-center justify-center gap-3 py-6 text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  <span className="text-sm font-medium">Loading later connections…</span>
+                </div>
+              )}
+
+              {/* Manual load more fallback (if intersection observer doesn't fire) */}
+              {!isLoadingMore && canLoadMore && (
+                <button
+                  onClick={loadMore}
+                  className="w-full py-4 flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground border border-dashed border-border rounded-xl hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                >
+                  <ChevronDown className="h-4 w-4" />
+                  Load later departures
+                </button>
+              )}
             </div>
           )}
         </div>
