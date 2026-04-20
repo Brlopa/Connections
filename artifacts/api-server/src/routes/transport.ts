@@ -43,6 +43,21 @@ async function fetchDb(
     });
     if (!res.ok) throw new Error(`DB API ${res.status}`);
     return res.json();
+  } catch (err) {
+    // Swallow abort/timeout and network errors — DB API is best-effort
+    if (err instanceof Error) {
+      if (
+        err.name === "AbortError" ||
+        err.name === "TimeoutError" ||
+        err.message.includes("aborted") ||
+        (err as NodeJS.ErrnoException).code === "UND_ERR_CONNECT_TIMEOUT" ||
+        (err as NodeJS.ErrnoException).code === "ECONNRESET" ||
+        (err as NodeJS.ErrnoException).code === "ETIMEDOUT"
+      ) {
+        return null;
+      }
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -238,27 +253,36 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
       let resolvedToId = toDbId;
 
       if (!resolvedFromId || !resolvedToId) {
-        // Only look up the IDs we don't have yet
-        const lookups = await Promise.all([
+        // Only look up the IDs we don't have yet — each wrapped in its own catch
+        const [fromResult, toResult] = await Promise.all([
           !resolvedFromId
-            ? (fetchDb("/locations", { query: from, results: 1, fuzzy: true }, 3000) as Promise<Record<string, unknown>[]>).catch(() => null)
+            ? fetchDb("/locations", { query: from, results: 1, fuzzy: true }, 3000).catch(() => null)
             : Promise.resolve(null),
           !resolvedToId
-            ? (fetchDb("/locations", { query: to, results: 1, fuzzy: true }, 3000) as Promise<Record<string, unknown>[]>).catch(() => null)
+            ? fetchDb("/locations", { query: to, results: 1, fuzzy: true }, 3000).catch(() => null)
             : Promise.resolve(null),
         ]);
-        if (!resolvedFromId) resolvedFromId = (lookups[0]?.[0]?.id as string | undefined);
-        if (!resolvedToId) resolvedToId = (lookups[1]?.[0]?.id as string | undefined);
+
+        if (!resolvedFromId) {
+          const arr = fromResult as Record<string, unknown>[] | null;
+          resolvedFromId = arr?.[0]?.id as string | undefined;
+        }
+        if (!resolvedToId) {
+          const arr = toResult as Record<string, unknown>[] | null;
+          resolvedToId = arr?.[0]?.id as string | undefined;
+        }
       }
 
       if (!resolvedFromId || !resolvedToId) return null;
 
       const departure = `${dateStr}T${timeStr}:00`;
-      return fetchDb(
+      const result = await fetchDb(
         "/journeys",
         { from: resolvedFromId, to: resolvedToId, departure, results: limit ?? 5, stopovers: true },
         8000,
-      ) as Promise<Record<string, unknown>>;
+      ).catch(() => null);
+
+      return result;
     } catch {
       return null;
     }
