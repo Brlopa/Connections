@@ -181,7 +181,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const walks = extractWalkSegments(connection);
 
   // Initialize map
-  u// Initialize map
+  // Initialize map
   useEffect(() => {
     if (!mapContainer.current) return;
 
