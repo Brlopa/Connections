@@ -1,6 +1,5 @@
 import { Router, type IRouter } from "express";
 import {
-  SearchLocationsQueryParams,
   SearchConnectionsQueryParams,
   GetStationboardQueryParams,
 } from "@workspace/api-zod";
@@ -45,14 +44,26 @@ async function fetchTransport(
 
 router.get("/transport/locations", async (req, res): Promise<void> => {
   try {
-    const parsed = SearchLocationsQueryParams.safeParse(req.query);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.message });
+    const { query, type, x, y } = req.query as Record<string, string | undefined>;
+
+    // The API supports either a text query OR coordinate-based (x + y) lookup.
+    const hasQuery = query && query.trim() !== "";
+    const hasCoords = x && y;
+
+    if (!hasQuery && !hasCoords) {
+      res.status(400).json({
+        error: "Either 'query' or both 'x' and 'y' parameters are required.",
+      });
       return;
     }
-    const { query, type } = parsed.data;
 
-    const data = await fetchTransport("/locations", { query, type });
+    const params: Record<string, string> = {};
+    if (hasQuery) params.query = query!;
+    if (type)     params.type  = type;
+    if (x)        params.x     = x;
+    if (y)        params.y     = y;
+
+    const data = await fetchTransport("/locations", params);
     const stations = (data as Record<string, unknown>)?.stations ?? [];
 
     res.json({ stations });
@@ -65,8 +76,8 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
     // Normalize `via` to always be an array before Zod validation.
-    // Express parses a single ?via=Bern as a string, but ?via=Bern&via=Zurich
-    // as an array. The Zod schema expects an array in both cases.
+    // Express parses a single ?via=Bern as a string, but multiple values as
+    // an array. The Zod schema expects an array in both cases.
     const rawQuery = { ...req.query };
     if (rawQuery.via !== undefined && !Array.isArray(rawQuery.via)) {
       rawQuery.via = [rawQuery.via as string];
@@ -80,13 +91,12 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
 
     const { from, to, via, date, time, isArrivalTime, limit } = parsed.data;
 
-    // Filter out empty strings that may come from a cleared via input
+    // Filter out empty strings from a cleared via input
     const viaFiltered = via?.filter((v) => v.trim() !== "");
 
     const data = await fetchTransport("/connections", {
       from,
       to,
-      // Only pass via if there are actual values
       ...(viaFiltered && viaFiltered.length > 0 ? { via: viaFiltered } : {}),
       date,
       time,
@@ -95,8 +105,8 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     });
 
     const connections = (data as Record<string, unknown>)?.connections ?? [];
-    const fromLoc = (data as Record<string, unknown>)?.from ?? null;
-    const toLoc = (data as Record<string, unknown>)?.to ?? null;
+    const fromLoc    = (data as Record<string, unknown>)?.from ?? null;
+    const toLoc      = (data as Record<string, unknown>)?.to   ?? null;
 
     res.json({ from: fromLoc, to: toLoc, connections });
   } catch (error) {
