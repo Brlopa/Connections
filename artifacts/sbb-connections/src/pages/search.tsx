@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { format } from "date-fns";
-import { ArrowRightLeft, Search, Calendar, Clock, Timer, ChevronDown, Loader2 } from "lucide-react";
+import {
+  ArrowRightLeft,
+  Search,
+  Calendar,
+  Clock,
+  Timer,
+  ChevronDown,
+  Loader2,
+  LocateFixed,
+} from "lucide-react";
 import { searchConnections } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { LocationSearch, type EnrichedLocation } from "@/components/LocationSearch";
@@ -11,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Connection } from "@workspace/api-client-react/src/generated/api.schemas";
+
+// ── types ──────────────────────────────────────────────────────
 
 type ExpandedView = "details" | "map" | "both";
 
@@ -24,26 +35,42 @@ type SearchParams = {
   toDbId?: string;
 };
 
-function getMs(isoOrNull: string | null | undefined, tsOrNull: number | null | undefined): number | null {
+type GeoState = "idle" | "loading" | "error";
+
+// ── helpers ────────────────────────────────────────────────────
+
+function getMs(
+  isoOrNull: string | null | undefined,
+  tsOrNull: number | null | undefined,
+): number | null {
   if (tsOrNull != null) return tsOrNull * 1000;
-  if (isoOrNull) { try { return new Date(isoOrNull).getTime(); } catch { return null; } }
+  if (isoOrNull) {
+    try {
+      return new Date(isoOrNull).getTime();
+    } catch {
+      return null;
+    }
+  }
   return null;
 }
 
-/** Extract the departure time of the last connection as HH:MM and its date */
-function getLastDepartureDateTime(connections: Connection[]): { date: string; time: string } | null {
+function getLastDepartureDateTime(
+  connections: Connection[],
+): { date: string; time: string } | null {
   if (connections.length === 0) return null;
   const last = connections[connections.length - 1];
   const sections = last.sections ?? [];
   const dep = sections[0]?.departure;
   const ts = getMs(dep?.departure, dep?.departureTimestamp);
   if (!ts) return null;
-  const d = new Date(ts + 60_000); // add 1 minute to avoid duplicate
+  const d = new Date(ts + 60_000);
   return {
     date: format(d, "yyyy-MM-dd"),
     time: format(d, "HH:mm"),
   };
 }
+
+// ── component ──────────────────────────────────────────────────
 
 export default function SearchPage() {
   const [fromQuery, setFromQuery] = useState("");
@@ -68,129 +95,217 @@ export default function SearchPage() {
   const [isError, setIsError] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
-  // Track the "next page" time cursor
-  const [nextPageDateTime, setNextPageDateTime] = useState<{ date: string; time: string } | null>(null);
+  const [nextPageDateTime, setNextPageDateTime] = useState<{
+    date: string;
+    time: string;
+  } | null>(null);
   const [canLoadMore, setCanLoadMore] = useState(false);
 
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [expandedView, setExpandedView] = useState<ExpandedView>("both");
 
-  // Sentinel element for intersection observer
+  // Geolocation state
+  const [geoState, setGeoState] = useState<GeoState>("idle");
+  const [geoError, setGeoError] = useState<string | null>(null);
+
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadMoreInProgress = useRef(false);
 
-  // ── fetch helpers ──────────────────────────────────────────────
+  // ── fetch connections ────────────────────────────────────────
 
-  const fetchConnections = useCallback(async (params: SearchParams, append = false) => {
-    if (append) {
-      setIsLoadingMore(true);
-    } else {
-      setIsLoading(true);
-      setIsError(false);
-    }
-
-    try {
-      const data = await searchConnections({
-        from: params.from,
-        to: params.to,
-        via: params.via,
-        date: params.date,
-        time: params.time,
-        limit: 5,
-        fromDbId: params.fromDbId,
-        toDbId: params.toDbId,
-      });
-
-      const newConns = data.connections ?? [];
-
+  const fetchConnections = useCallback(
+    async (params: SearchParams, append = false) => {
       if (append) {
-        setConnections(prev => {
-          // Deduplicate by departure timestamp
-          const existingTs = new Set(prev.map(c => {
-            const sec = c.sections?.[0]?.departure;
-            return getMs(sec?.departure, sec?.departureTimestamp);
-          }));
-          const deduped = newConns.filter(c => {
-            const sec = c.sections?.[0]?.departure;
-            const ts = getMs(sec?.departure, sec?.departureTimestamp);
-            return ts === null || !existingTs.has(ts);
-          });
-          return [...prev, ...deduped];
+        setIsLoadingMore(true);
+      } else {
+        setIsLoading(true);
+        setIsError(false);
+      }
+
+      try {
+        const data = await searchConnections({
+          from: params.from,
+          to: params.to,
+          via: params.via,
+          date: params.date,
+          time: params.time,
+          limit: 5,
+          fromDbId: params.fromDbId,
+          toDbId: params.toDbId,
         });
-      } else {
-        setConnections(newConns);
-        setFromLoc(data.from ?? null);
-        setToLoc(data.to ?? null);
-        setSelectedIdx(null);
-      }
 
-      // Set up next page cursor
-      if (newConns.length > 0) {
-        const cursor = getLastDepartureDateTime(newConns);
-        setNextPageDateTime(cursor);
-        setCanLoadMore(newConns.length >= 3); // if we got results, more likely exist
-      } else {
+        const newConns = data.connections ?? [];
+
+        if (append) {
+          setConnections((prev) => {
+            const existingTs = new Set(
+              prev.map((c) => {
+                const sec = c.sections?.[0]?.departure;
+                return getMs(sec?.departure, sec?.departureTimestamp);
+              }),
+            );
+            const deduped = newConns.filter((c) => {
+              const sec = c.sections?.[0]?.departure;
+              const ts = getMs(sec?.departure, sec?.departureTimestamp);
+              return ts === null || !existingTs.has(ts);
+            });
+            return [...prev, ...deduped];
+          });
+        } else {
+          setConnections(newConns);
+          setFromLoc(data.from ?? null);
+          setToLoc(data.to ?? null);
+          setSelectedIdx(null);
+        }
+
+        if (newConns.length > 0) {
+          const cursor = getLastDepartureDateTime(newConns);
+          setNextPageDateTime(cursor);
+          setCanLoadMore(newConns.length >= 3);
+        } else {
+          setCanLoadMore(false);
+        }
+      } catch {
+        if (!append) setIsError(true);
         setCanLoadMore(false);
+      } finally {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+        loadMoreInProgress.current = false;
       }
-    } catch {
-      if (!append) setIsError(true);
-      setCanLoadMore(false);
-    } finally {
-      setIsLoading(false);
-      setIsLoadingMore(false);
-      loadMoreInProgress.current = false;
-    }
-  }, []);
+    },
+    [],
+  );
 
-  // ── load more when sentinel is visible ────────────────────────
+  // ── load more (infinite scroll) ──────────────────────────────
 
   const loadMore = useCallback(async () => {
-    if (!searchParams || !nextPageDateTime || !canLoadMore || loadMoreInProgress.current) return;
+    if (
+      !searchParams ||
+      !nextPageDateTime ||
+      !canLoadMore ||
+      loadMoreInProgress.current
+    )
+      return;
     loadMoreInProgress.current = true;
-    const nextParams: SearchParams = {
-      ...searchParams,
-      date: nextPageDateTime.date,
-      time: nextPageDateTime.time,
-    };
-    await fetchConnections(nextParams, true);
+    await fetchConnections(
+      { ...searchParams, date: nextPageDateTime.date, time: nextPageDateTime.time },
+      true,
+    );
   }, [searchParams, nextPageDateTime, canLoadMore, fetchConnections]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
-
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && canLoadMore && !isLoadingMore && !isLoading) {
+        if (
+          entries[0]?.isIntersecting &&
+          canLoadMore &&
+          !isLoadingMore &&
+          !isLoading
+        ) {
           loadMore();
         }
       },
-      { threshold: 0.1, rootMargin: "200px" }
+      { threshold: 0.1, rootMargin: "200px" },
     );
-
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [canLoadMore, isLoadingMore, isLoading, loadMore]);
 
-  // ── search handler ─────────────────────────────────────────────
+  // ── geolocation ───────────────────────────────────────────────
+
+  const handleUseCurrentLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setGeoState("error");
+      setGeoError("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    setGeoState("loading");
+    setGeoError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        try {
+          // The transport API expects x=latitude, y=longitude
+          const res = await fetch(
+            `/api/transport/locations?x=${latitude}&y=${longitude}&type=station`,
+          );
+          if (!res.ok) throw new Error("Location lookup failed");
+          const data = await res.json();
+          const nearest = data.stations?.[0];
+
+          if (!nearest?.name) {
+            throw new Error("No nearby station found");
+          }
+
+          setFromQuery(nearest.name);
+          setFromStation(nearest as EnrichedLocation);
+          setGeoState("idle");
+        } catch (err) {
+          console.error("[Geolocation lookup error]", err);
+          setGeoState("error");
+          setGeoError("Could not find a nearby station. Please try again.");
+        }
+      },
+      (err) => {
+        console.error("[Geolocation error]", err);
+        setGeoState("error");
+        switch (err.code) {
+          case err.PERMISSION_DENIED:
+            setGeoError("Location access was denied. Please allow it in your browser settings.");
+            break;
+          case err.POSITION_UNAVAILABLE:
+            setGeoError("Your location could not be determined.");
+            break;
+          case err.TIMEOUT:
+            setGeoError("Location request timed out. Please try again.");
+            break;
+          default:
+            setGeoError("An unknown error occurred while getting your location.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+    );
+  }, []);
+
+  // Clear geo error after a few seconds
+  useEffect(() => {
+    if (geoState !== "error") return;
+    const t = setTimeout(() => {
+      setGeoState("idle");
+      setGeoError(null);
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [geoState]);
+
+  // ── search ────────────────────────────────────────────────────
 
   const handleSwap = () => {
-    const tempQuery = fromQuery;
-    const tempStation = fromStation;
+    const tmpQ = fromQuery;
+    const tmpS = fromStation;
     setFromQuery(toQuery);
     setFromStation(toStation);
-    setToQuery(tempQuery);
-    setToStation(tempStation);
+    setToQuery(tmpQ);
+    setToStation(tmpS);
   };
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!fromQuery || !toQuery) return;
-    const viaValue = viaStation?.name ? [viaStation.name] : (viaQuery ? [viaQuery] : undefined);
+    const viaValue =
+      viaStation?.name
+        ? [viaStation.name]
+        : viaQuery
+        ? [viaQuery]
+        : undefined;
     const params: SearchParams = {
       from: fromStation?.name || fromQuery,
       to: toStation?.name || toQuery,
-      via: viaValue,   // <-- Add this line
+      via: viaValue,
       date,
       time,
       fromDbId: fromStation?.dbId ?? undefined,
@@ -232,10 +347,10 @@ export default function SearchPage() {
     }
   };
 
-  // ── render ─────────────────────────────────────────────────────
-
   const fromLocTyped = fromLoc as { name?: string } | null;
   const toLocTyped = toLoc as { name?: string } | null;
+
+  // ── render ────────────────────────────────────────────────────
 
   return (
     <Layout>
@@ -245,20 +360,61 @@ export default function SearchPage() {
           <form onSubmit={handleSearch} className="space-y-4">
             {/* Stations Block */}
             <div className="flex flex-col md:flex-row md:items-end gap-2 md:gap-4 relative">
-              <div className="w-full flex-1">
-                <LocationSearch
-                  id="from-station"
-                  label="From"
-                  placeholder="Station or stop"
-                  value={fromQuery}
-                  onChange={(val, loc) => {
-                    setFromQuery(val);
-                    setFromStation(loc ?? null);
-                  }}
-                />
+              {/* FROM with geolocation button */}
+              <div className="w-full flex-1 space-y-0">
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <LocationSearch
+                      id="from-station"
+                      label="From"
+                      placeholder="Station or stop"
+                      value={fromQuery}
+                      onChange={(val, loc) => {
+                        setFromQuery(val);
+                        setFromStation(loc ?? null);
+                      }}
+                    />
+                  </div>
+
+                  {/* Current location button */}
+                  <div className="flex flex-col justify-end pb-0.5">
+                    <button
+                      type="button"
+                      onClick={handleUseCurrentLocation}
+                      disabled={geoState === "loading"}
+                      title="Use my current location"
+                      className={`
+                        h-12 w-12 shrink-0 flex items-center justify-center rounded-md border
+                        transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring
+                        disabled:pointer-events-none disabled:opacity-50
+                        ${
+                          geoState === "error"
+                            ? "border-destructive/50 bg-destructive/10 text-destructive"
+                            : geoState === "loading"
+                            ? "border-primary/30 bg-primary/5 text-primary"
+                            : "border-input bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground hover:border-primary/40"
+                        }
+                      `}
+                      aria-label="Use current location"
+                    >
+                      {geoState === "loading" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <LocateFixed className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Geo error message */}
+                {geoState === "error" && geoError && (
+                  <p className="text-xs text-destructive mt-1.5 leading-snug">
+                    {geoError}
+                  </p>
+                )}
               </div>
 
-              {/* Swap Button: Centered and rotated on mobile, normal on desktop */}
+              {/* Swap Button */}
               <div className="flex justify-center z-10 -my-3 md:my-0 md:mb-1 md:-mx-2">
                 <Button
                   type="button"
@@ -273,6 +429,7 @@ export default function SearchPage() {
                 </Button>
               </div>
 
+              {/* TO */}
               <div className="w-full flex-1">
                 <LocationSearch
                   id="to-station"
@@ -304,7 +461,9 @@ export default function SearchPage() {
             {/* Options Block */}
             <div className="grid grid-cols-2 md:flex md:flex-row gap-4 pt-2">
               <div className="space-y-1.5 md:flex-1">
-                <Label htmlFor="date" className="text-sm font-semibold text-muted-foreground">Date</Label>
+                <Label htmlFor="date" className="text-sm font-semibold text-muted-foreground">
+                  Date
+                </Label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -317,9 +476,11 @@ export default function SearchPage() {
                   />
                 </div>
               </div>
-              
+
               <div className="space-y-1.5 md:flex-1">
-                <Label htmlFor="time" className="text-sm font-semibold text-muted-foreground">Time</Label>
+                <Label htmlFor="time" className="text-sm font-semibold text-muted-foreground">
+                  Time
+                </Label>
                 <div className="relative">
                   <Clock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -377,11 +538,13 @@ export default function SearchPage() {
 
         {/* Results */}
         <div className="space-y-4">
-          {/* Initial loading skeletons */}
           {isLoading && connections.length === 0 && (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-32 bg-card/50 animate-pulse rounded-xl border border-border" />
+                <div
+                  key={i}
+                  className="h-32 bg-card/50 animate-pulse rounded-xl border border-border"
+                />
               ))}
             </div>
           )}
@@ -400,18 +563,23 @@ export default function SearchPage() {
 
           {!isLoading && !isError && filteredConnections.length === 0 && connections.length > 0 && (
             <div className="text-center py-12 text-muted-foreground bg-card rounded-xl border border-border">
-              No connections with at least {minTransferTime} min transfer time found. Try reducing the minimum.
+              No connections with at least {minTransferTime} min transfer time
+              found. Try reducing the minimum.
             </div>
           )}
 
           {filteredConnections.length > 0 && (
             <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <h2 className="text-xl font-bold tracking-tight mb-4">
-                Connections from {fromLocTyped?.name || searchParams?.from} to {toLocTyped?.name || searchParams?.to}
+                Connections from {fromLocTyped?.name || searchParams?.from} to{" "}
+                {toLocTyped?.name || searchParams?.to}
               </h2>
 
               {filteredConnections.map((connection, idx) => (
-                <div key={`${idx}-${(connection.sections?.[0]?.departure?.departureTimestamp ?? idx)}`} className="space-y-2">
+                <div
+                  key={`${idx}-${(connection.sections?.[0]?.departure?.departureTimestamp ?? idx)}`}
+                  className="space-y-2"
+                >
                   <ConnectionCard
                     connection={connection}
                     selected={selectedIdx === idx}
@@ -426,12 +594,17 @@ export default function SearchPage() {
                             key={view}
                             onClick={() => setExpandedView(view)}
                             className={`px-3 py-1.5 rounded-md font-medium transition-colors capitalize
-                              ${expandedView === view
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground hover:bg-muted/80"
+                              ${
+                                expandedView === view
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted text-muted-foreground hover:bg-muted/80"
                               }`}
                           >
-                            {view === "both" ? "Details + Map" : view === "details" ? "Journey details" : "Map"}
+                            {view === "both"
+                              ? "Details + Map"
+                              : view === "details"
+                              ? "Journey details"
+                              : "Map"}
                           </button>
                         ))}
                       </div>
@@ -468,10 +641,9 @@ export default function SearchPage() {
                 </div>
               ))}
 
-              {/* Sentinel for infinite scroll — invisible, sits below the last card */}
+              {/* Sentinel for infinite scroll */}
               <div ref={sentinelRef} className="h-4" aria-hidden="true" />
 
-              {/* Loading more indicator */}
               {isLoadingMore && (
                 <div className="flex items-center justify-center gap-3 py-6 text-muted-foreground">
                   <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -479,7 +651,6 @@ export default function SearchPage() {
                 </div>
               )}
 
-              {/* Manual load more fallback (if intersection observer doesn't fire) */}
               {!isLoadingMore && canLoadMore && (
                 <button
                   onClick={loadMore}
