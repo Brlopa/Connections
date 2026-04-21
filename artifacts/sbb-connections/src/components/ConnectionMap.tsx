@@ -181,21 +181,26 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const walks = extractWalkSegments(connection);
 
   // Initialize map
+  u// Initialize map
   useEffect(() => {
     if (!mapContainer.current) return;
 
+    // Calculate center vector: use median stop or default to central Europe
     const center: [number, number] =
       stops.length > 0
         ? [stops[Math.floor(stops.length / 2)].lng, stops[Math.floor(stops.length / 2)].lat]
-        : [8.2, 46.8];
+        : [10.0, 51.0];
 
     map.current = new maplibregl.Map({
       container: mapContainer.current,
-      style: "https://vectortiles.geo.admin.ch/styles/ch.swisstopo.lightbasemap.vt/style.json",
+      style: "https://tiles.openfreemap.org/styles/bright",
       center,
-      zoom: 10,
+      zoom: stops.length > 0 ? 10 : 4,
       attributionControl: true,
     });
+
+    // Add Fullscreen Control to the top-right corner
+    map.current.addControl(new maplibregl.FullscreenControl(), "top-right");
 
     map.current.on("load", () => {
       setMapReady(true);
