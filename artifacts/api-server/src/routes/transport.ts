@@ -11,19 +11,17 @@ const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 
 // ── fetch helpers ──────────────────────────────────────────────
 
-// ── fetch helpers ──────────────────────────────────────────────
-
 async function fetchTransport(
   path: string,
   params: Record<string, string | number | boolean | undefined | string[]>,
   timeoutMs = 10000,
 ): Promise<unknown> {
   const url = new URL(`${TRANSPORT_API_BASE}${path}`);
-  
+
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") {
       if (Array.isArray(v)) {
-        // Apply required array notation (e.g., via[]=City1&via[]=City2)
+        // The transport API requires array notation: via[]=City1&via[]=City2
         v.forEach((val) => url.searchParams.append(`${k}[]`, String(val)));
       } else {
         url.searchParams.set(k, String(v));
@@ -66,18 +64,30 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
-    const parsed = SearchConnectionsQueryParams.safeParse(req.query);
+    // Normalize `via` to always be an array before Zod validation.
+    // Express parses a single ?via=Bern as a string, but ?via=Bern&via=Zurich
+    // as an array. The Zod schema expects an array in both cases.
+    const rawQuery = { ...req.query };
+    if (rawQuery.via !== undefined && !Array.isArray(rawQuery.via)) {
+      rawQuery.via = [rawQuery.via as string];
+    }
+
+    const parsed = SearchConnectionsQueryParams.safeParse(rawQuery);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
-    // Note: DB-specific IDs (fromDbId, toDbId) are ignored/removed here
+
     const { from, to, via, date, time, isArrivalTime, limit } = parsed.data;
+
+    // Filter out empty strings that may come from a cleared via input
+    const viaFiltered = via?.filter((v) => v.trim() !== "");
 
     const data = await fetchTransport("/connections", {
       from,
       to,
-      via,
+      // Only pass via if there are actual values
+      ...(viaFiltered && viaFiltered.length > 0 ? { via: viaFiltered } : {}),
       date,
       time,
       isArrivalTime,
