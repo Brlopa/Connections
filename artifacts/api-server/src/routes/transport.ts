@@ -15,7 +15,7 @@ const DB_API_BASE = "https://v6.db.transport.rest";
 async function fetchTransport(
   path: string,
   params: Record<string, string | number | boolean | undefined>,
-  timeoutMs = 10000, // Added a 10s default timeout
+  timeoutMs = 10000,
 ): Promise<unknown> {
   const url = new URL(`${TRANSPORT_API_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) {
@@ -53,7 +53,6 @@ async function fetchDb(
     if (!res.ok) throw new Error(`DB API ${res.status}`);
     return await res.json();
   } catch (err) {
-    // Swallow abort/timeout and network errors safely
     const e = err as any;
     const errName = e?.name || e?.cause?.name;
     const errCode = e?.code || e?.cause?.code;
@@ -143,7 +142,7 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
           category: dbProductToCategory(line),
           number: line.id ?? "",
           to: leg.direction ?? "",
-          passList: [],
+          passList,
         }
       : null,
     walk: isWalk ? { duration: depTs && arrTs ? arrTs - depTs : null, distance: leg.distance ?? null } : null,
@@ -166,7 +165,9 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
 }
 
 function normalizeDbJourney(journey: Record<string, unknown>): Record<string, unknown> {
-  const legs = (journey.legs as Array<Record<string, unknown>>) ?? [];
+  const legs = Array.isArray(journey.legs)
+    ? (journey.legs as Array<Record<string, unknown>>)
+    : [];
   const sections = legs.map(normalizeDbLeg);
   const firstLeg = legs[0];
   const lastLeg = legs[legs.length - 1];
@@ -179,9 +180,39 @@ function normalizeDbJourney(journey: Record<string, unknown>): Record<string, un
     : null;
 
   const vehicleLegs = legs.filter((l) => l.line);
+
+  // Build proper Checkpoint objects for from/to so that connection.from.station.name
+  // works correctly in the frontend (previously was a bare Location without .station).
+  const firstDepStr = firstLeg
+    ? ((String((firstLeg.plannedDeparture ?? firstLeg.departure) ?? "")) || null)
+    : null;
+  const lastArrStr = lastLeg
+    ? ((String((lastLeg.plannedArrival ?? lastLeg.arrival) ?? "")) || null)
+    : null;
+  const firstDepTs = firstDepStr ? Math.floor(new Date(firstDepStr).getTime() / 1000) : null;
+  const lastArrTs = lastArrStr ? Math.floor(new Date(lastArrStr).getTime() / 1000) : null;
+  const firstDepDelay = firstLeg?.departureDelay as number | null | undefined;
+  const lastArrDelay = lastLeg?.arrivalDelay as number | null | undefined;
+
   return {
-    from: firstLeg ? normalizeDbLocation((firstLeg.origin as Record<string, unknown>) ?? {}) : null,
-    to: lastLeg ? normalizeDbLocation((lastLeg.destination as Record<string, unknown>) ?? {}) : null,
+    from: firstLeg
+      ? {
+          station: normalizeDbLocation((firstLeg.origin as Record<string, unknown>) ?? {}),
+          departure: firstDepStr,
+          departureTimestamp: firstDepTs != null && !isNaN(firstDepTs) ? firstDepTs : null,
+          delay: firstDepDelay != null ? Math.round(firstDepDelay / 60) : null,
+          platform: firstLeg.departurePlatform ?? null,
+        }
+      : null,
+    to: lastLeg
+      ? {
+          station: normalizeDbLocation((lastLeg.destination as Record<string, unknown>) ?? {}),
+          arrival: lastArrStr,
+          arrivalTimestamp: lastArrTs != null && !isNaN(lastArrTs) ? lastArrTs : null,
+          delay: lastArrDelay != null ? Math.round(lastArrDelay / 60) : null,
+          platform: lastLeg.arrivalPlatform ?? null,
+        }
+      : null,
     duration: durationStr,
     transfers: Math.max(0, vehicleLegs.length - 1),
     sections,
@@ -214,25 +245,22 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
         ? (dbResult.value as Record<string, unknown>[]).filter((l) => l.type === "station")
         : [];
 
-    // Build name → DB station map for ID enrichment
     const dbByName = new Map<string, Record<string, unknown>>();
     for (const dbStn of dbRaw) {
       const name = String(dbStn.name ?? "").toLowerCase();
       if (name) dbByName.set(name, dbStn);
     }
 
-    // Enrich Swiss stations with DB ID when names match
     const enrichedSwiss = swissStations.map((s) => {
       const nameLower = String(s.name ?? "").toLowerCase();
       const dbMatch = dbByName.get(nameLower);
       if (dbMatch) {
-        dbByName.delete(nameLower); // don't add as a separate DB-only entry
+        dbByName.delete(nameLower);
         return { ...s, dbId: dbMatch.id ?? null };
       }
       return s;
     });
 
-    // Remaining DB-only stations
     const dbOnlyStations = Array.from(dbByName.values()).map(normalizeDbLocation);
 
     res.json({ stations: [...enrichedSwiss, ...dbOnlyStations] });
@@ -256,7 +284,6 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
       time ??
       `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
 
-    // Swiss query always runs (fast, parallel)
     const swissPromise = fetchTransport("/connections", {
       from,
       to,
@@ -264,16 +291,14 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
       time,
       isArrivalTime,
       limit,
-    }).catch((e) => null);
+    }).catch(() => null);
 
-    // DB query: use pre-resolved IDs if available, otherwise look them up (with timeout)
     const dbPromise = (async () => {
       try {
         let resolvedFromId = fromDbId;
         let resolvedToId = toDbId;
 
         if (!resolvedFromId || !resolvedToId) {
-          // Only look up the IDs we don't have yet — each wrapped in its own catch
           const [fromResult, toResult] = await Promise.all([
             !resolvedFromId
               ? fetchDb("/locations", { query: from, results: 1, fuzzy: true }, 3000).catch(() => null)
@@ -313,9 +338,21 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     const swissConnections: Record<string, unknown>[] =
       (swissData as Record<string, unknown> | null)?.connections as Record<string, unknown>[] ?? [];
 
-    const dbJourneys: Record<string, unknown>[] =
-      (dbData as Record<string, unknown> | null)?.journeys as Record<string, unknown>[] ?? [];
-    const dbConnections = dbJourneys.map(normalizeDbJourney);
+    const rawDbJourneys = (dbData as Record<string, unknown> | null)?.journeys;
+    const dbJourneys: Record<string, unknown>[] = Array.isArray(rawDbJourneys)
+      ? (rawDbJourneys as Record<string, unknown>[])
+      : [];
+
+    // Normalize each DB journey with full error isolation so one bad journey
+    // never takes down the whole response.
+    const dbConnections: Record<string, unknown>[] = [];
+    for (const j of dbJourneys) {
+      try {
+        dbConnections.push(normalizeDbJourney(j));
+      } catch (err) {
+        console.error("[DB journey normalize error]", err);
+      }
+    }
 
     // Merge: Swiss first, add DB results not already covered (same dep+arr ±90s)
     const merged = [...swissConnections];
