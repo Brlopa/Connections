@@ -456,7 +456,7 @@ router.post('/route', async (req: Request, res: Response) => {
   }
 
   const waypoints = `${start.lat},${start.lon}|${end.lat},${end.lon}`;
-  const requestUrl = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${"2da5610607674a2488f1e155a56f1146"}`;
+  const requestUrl = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${GEOAPIFY_KEY}`;
 
   try {
     const response = await fetch(requestUrl);
