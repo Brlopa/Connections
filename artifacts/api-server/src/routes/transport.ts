@@ -10,6 +10,33 @@ const router: IRouter = Router();
 const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 const DB_API_BASE = "https://v6.db.transport.rest";
 
+// ── routing decision ────────────────────────────────────────────
+//
+// DB/HAFAS station IDs use UIC country codes as prefix:
+//   85xxxxxx → Switzerland
+//   80xxxxxx → Germany
+//   81xxxxxx → Austria
+//   87xxxxxx → France
+//   83xxxxxx → Italy
+//   … etc.
+//
+// Rule: Only call the DB API when at least one endpoint is identified as
+// non-Swiss. Swiss-only routes are served exclusively by the SBB API, which
+// is more accurate for domestic connections.
+
+function isSwissStationId(id: string): boolean {
+  return /^85/.test(id);
+}
+
+function shouldUseDbApi(fromDbId?: string, toDbId?: string): boolean {
+  // If we have no DB IDs at all (user typed a free-text Swiss name) → SBB only
+  if (!fromDbId && !toDbId) return false;
+  // Use DB API if either end-point is recognisably non-Swiss
+  if (fromDbId && !isSwissStationId(fromDbId)) return true;
+  if (toDbId && !isSwissStationId(toDbId)) return true;
+  return false;
+}
+
 // ── fetch helpers ──────────────────────────────────────────────
 
 async function fetchTransport(
@@ -43,37 +70,35 @@ async function fetchTransport(
 async function fetchDb(
   path: string,
   params: Record<string, string | number | boolean | undefined | string[]>,
-  timeoutMs = 6000,
+  timeoutMs = 8000,
 ): Promise<unknown> {
   const url = new URL(`${DB_API_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") {
-       if (Array.isArray(v)) {
+      if (Array.isArray(v)) {
         v.forEach((val) => url.searchParams.append(k, String(val)));
       } else {
         url.searchParams.set(k, String(v));
       }
     }
   }
-  
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  
+
   try {
-    const res = await fetch(url.toString(), {
-      headers: { "Accept-Encoding": "gzip" },
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`DB API ${res.status}`);
+    const res = await fetch(url.toString(), { signal: controller.signal });
+    if (!res.ok) throw new Error(`DB API ${res.status}: ${await res.text().catch(() => "")}`);
     return await res.json();
   } catch (err) {
+    // Swallow errors — DB API is a best-effort secondary source
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ── normalizers (Mapping DB Schema -> OpenData Schema) ──────────
+// ── normalizers (DB schema → OpenData schema) ───────────────────
 
 function normalizeDbLocation(loc: Record<string, unknown>): Record<string, unknown> {
   const location = loc.location as Record<string, unknown> | null | undefined;
@@ -123,7 +148,9 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
           passList: [],
         }
       : null,
-    walk: isWalk ? { duration: depTs && arrTs ? arrTs - depTs : null, distance: leg.distance ?? null } : null,
+    walk: isWalk
+      ? { duration: depTs && arrTs ? arrTs - depTs : null, distance: leg.distance ?? null }
+      : null,
     departure: {
       station: normalizeDbLocation(origin),
       departure: depStr ?? null,
@@ -145,10 +172,12 @@ function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
 function normalizeDbJourney(journey: Record<string, unknown>): Record<string, unknown> {
   const legs = (journey.legs as Array<Record<string, unknown>>) ?? [];
   const sections = legs.map(normalizeDbLeg);
-  
-  const depMs = legs[0] ? new Date(String(legs[0].departure ?? "")).getTime() : NaN;
-  const arrMs = legs[legs.length - 1] ? new Date(String(legs[legs.length - 1].arrival ?? "")).getTime() : NaN;
-  
+
+  const depMs = legs[0] ? new Date(String(legs[0].plannedDeparture ?? legs[0].departure ?? "")).getTime() : NaN;
+  const arrMs = legs[legs.length - 1]
+    ? new Date(String(legs[legs.length - 1].plannedArrival ?? legs[legs.length - 1].arrival ?? "")).getTime()
+    : NaN;
+
   let durationStr = null;
   if (!isNaN(depMs) && !isNaN(arrMs)) {
     const durationMin = Math.round((arrMs - depMs) / 60000);
@@ -171,11 +200,23 @@ function normalizeDbJourney(journey: Record<string, unknown>): Record<string, un
   };
 }
 
+// ── helper: resolve DB station ID by name (only if not already known) ──
+
+async function resolveDbStationId(
+  name: string,
+  knownId?: string,
+  timeoutMs = 4000,
+): Promise<string | undefined> {
+  if (knownId) return knownId;
+  const result = await fetchDb("/locations", { query: name, results: 1, fuzzy: true }, timeoutMs);
+  return (result as any[])?.[0]?.id as string | undefined;
+}
+
 // ── routes ─────────────────────────────────────────────────────
 
 router.get("/transport/locations", async (req, res): Promise<void> => {
   try {
-    // Coordinate-based search (geolocation: x=latitude, y=longitude) — bypass text-search schema
+    // Coordinate-based search (geolocation: x=latitude, y=longitude)
     if (req.query.x && req.query.y) {
       const x = String(req.query.x);
       const y = String(req.query.y);
@@ -192,7 +233,7 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
     }
     const { query, type } = parsed.data;
 
-    // Parallele Evaluierung beider Datenräume
+    // Query both APIs in parallel
     const [swissResult, dbResult] = await Promise.allSettled([
       fetchTransport("/locations", { query, type }),
       fetchDb("/locations", { query, results: 8, fuzzy: true }),
@@ -208,13 +249,14 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
         ? (dbResult.value as Record<string, unknown>[]).filter((l) => l.type === "station")
         : [];
 
+    // Build DB name → station map for cross-referencing
     const dbByName = new Map<string, Record<string, unknown>>();
     for (const dbStn of dbRaw) {
       const name = String(dbStn.name ?? "").toLowerCase();
       if (name) dbByName.set(name, dbStn);
     }
 
-    // Kreuzreferenzierung: Zuweisung der dbId an SBB Stationen für nachfolgende Graphen-Routings
+    // Enrich Swiss stations with their DB IDs where names match
     const enrichedSwiss = swissStations.map((s) => {
       const nameLower = String(s.name ?? "").toLowerCase();
       const dbMatch = dbByName.get(nameLower);
@@ -225,6 +267,7 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
       return s;
     });
 
+    // Append DB-only stations (not already in Swiss results)
     const dbOnlyStations = Array.from(dbByName.values()).map(normalizeDbLocation);
     res.json({ stations: [...enrichedSwiss, ...dbOnlyStations] });
   } catch (error) {
@@ -234,14 +277,15 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
-    // Normalize via — Express parses a single query param as a string, but the schema expects array
+    // --- Normalise query ---------------------------------------------------
+    // Express parses a single ?via=X as a string; the schema expects string[].
     const rawQuery = { ...req.query };
     if (rawQuery.via !== undefined && !Array.isArray(rawQuery.via)) {
       rawQuery.via = [rawQuery.via as string];
     }
 
-    // Extract DB station IDs separately — they are not part of the generated OpenAPI schema
-    // and Zod will strip unknown fields, so we must read them from the raw query.
+    // fromDbId / toDbId are not in the generated OpenAPI schema and get stripped
+    // by Zod, so we read them directly from req.query before parsing.
     const fromDbId = typeof req.query.fromDbId === "string" ? req.query.fromDbId : undefined;
     const toDbId = typeof req.query.toDbId === "string" ? req.query.toDbId : undefined;
 
@@ -250,69 +294,88 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+
     const { from, to, via, date, time, isArrivalTime, limit } = parsed.data;
 
+    // Default date / time used by the DB API (SBB API defaults on its own)
     const dateStr = date ?? new Date().toISOString().split("T")[0];
-    const timeStr = time ?? `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
+    const timeStr =
+      time ??
+      `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
 
-    const swissPromise = fetchTransport("/connections", { from, to, via, date, time, isArrivalTime, limit }).catch(() => null);
+    // --- Decide which APIs to call ----------------------------------------
+    const useDb = shouldUseDbApi(fromDbId, toDbId);
 
-    // Sekundäre Vektorberechnung (DB)
-    const dbPromise = (async () => {
-      try {
-        let resolvedFromId = fromDbId;
-        let resolvedToId = toDbId;
+    // Always call SBB (it handles Swiss domestic + many cross-border trains)
+    const swissPromise = fetchTransport("/connections", {
+      from,
+      to,
+      via,
+      date,
+      time,
+      isArrivalTime,
+      limit,
+    }).catch(() => null);
 
-        // Wenn keine IDs übergeben wurden, Versuch einer iterativen Auflösung
-        if (!resolvedFromId || !resolvedToId) {
-          const [fromResult, toResult] = await Promise.all([
-            !resolvedFromId ? fetchDb("/locations", { query: from, results: 1 }, 3000) : null,
-            !resolvedToId ? fetchDb("/locations", { query: to, results: 1 }, 3000) : null,
-          ]);
-          if (!resolvedFromId) resolvedFromId = (fromResult as any[])?.[0]?.id;
-          if (!resolvedToId) resolvedToId = (toResult as any[])?.[0]?.id;
-        }
-
-        if (!resolvedFromId || !resolvedToId) return null;
-
-        const departure = `${dateStr}T${timeStr}:00`;
-
-        // Build DB API params — include via if provided (look up first via station ID)
-        const dbParams: Record<string, string | number | boolean | string[]> = {
-          from: resolvedFromId,
-          to: resolvedToId,
-          departure,
-          results: limit ?? 5,
-          stopovers: false,
-        };
-
-        // Optionally resolve via station ID for DB API
-        if (via && via.length > 0) {
+    // Only call DB API when at least one station is non-Swiss
+    const dbPromise: Promise<unknown> = useDb
+      ? (async (): Promise<unknown> => {
           try {
-            const viaResult = await fetchDb("/locations", { query: via[0], results: 1 }, 2000);
-            const viaId = (viaResult as any[])?.[0]?.id;
-            if (viaId) dbParams.via = viaId;
+            // Resolve station IDs — use the known DB IDs where available,
+            // otherwise look them up by name (necessary for pure-text searches
+            // and for the non-Swiss end of a cross-border route).
+            const [resolvedFromId, resolvedToId] = await Promise.all([
+              resolveDbStationId(from, fromDbId, 4000),
+              resolveDbStationId(to, toDbId, 4000),
+            ]);
+
+            if (!resolvedFromId || !resolvedToId) {
+              return null;
+            }
+
+            const departure = `${dateStr}T${timeStr}:00`;
+
+            const dbParams: Record<string, string | number | string[]> = {
+              from: resolvedFromId,
+              to: resolvedToId,
+              departure,
+              results: limit ?? 5,
+            };
+
+            // Optionally resolve a via station ID
+            if (via && via.length > 0) {
+              try {
+                const viaResult = await fetchDb(
+                  "/locations",
+                  { query: via[0], results: 1, fuzzy: true },
+                  2000,
+                );
+                const viaId = (viaResult as any[])?.[0]?.id as string | undefined;
+                if (viaId) dbParams.via = viaId;
+              } catch {
+                // via lookup failed — proceed without it
+              }
+            }
+
+            return await fetchDb("/journeys", dbParams, 8000);
           } catch {
-            // via lookup failed — proceed without it
+            return null;
           }
-        }
+        })()
+      : Promise.resolve(null);
 
-        const result = await fetchDb("/journeys", dbParams, 6000);
-        return result;
-      } catch {
-        return null;
-      }
-    })();
-
+    // --- Merge results ----------------------------------------------------
     const [swissData, dbData] = await Promise.all([swissPromise, dbPromise]);
 
-    const swissConnections: Record<string, unknown>[] = (swissData as any)?.connections ?? [];
-    const dbJourneys: Record<string, unknown>[] = (dbData as any)?.journeys ?? [];
+    const swissConnections: Record<string, unknown>[] =
+      (swissData as any)?.connections ?? [];
+    const dbJourneys: Record<string, unknown>[] =
+      (dbData as any)?.journeys ?? [];
     const dbConnections = dbJourneys.map(normalizeDbJourney);
 
+    // Start with Swiss results, then append non-duplicate DB results
     const merged = [...swissConnections];
 
-    // Mengen-Subtraktion: Identifikation und Filterung des Schnittbereichs
     for (const dbConn of dbConnections) {
       const dbSections = (dbConn.sections as any[]) ?? [];
       const dbDep = dbSections[0]?.departure?.departure;
@@ -323,28 +386,34 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
         const cDep = cSections[0]?.departure?.departure;
         const cArr = cSections[cSections.length - 1]?.arrival?.arrival;
         if (!dbDep || !cDep || !dbArr || !cArr) return false;
-        
-        // Epsilon = 90000ms (90 Sekunden)
+        // 90-second epsilon to catch same departure represented slightly differently
         return (
           Math.abs(new Date(dbDep).getTime() - new Date(cDep).getTime()) < 90_000 &&
           Math.abs(new Date(dbArr).getTime() - new Date(cArr).getTime()) < 90_000
         );
       });
 
-      if (!isDupe) {
-        merged.push(dbConn);
-      }
+      if (!isDupe) merged.push(dbConn);
     }
 
-    // Sortierung der Vektoren nach der diskreten Abfahrtszeit
+    // Sort chronologically by departure timestamp
     merged.sort((a, b) => {
-      const aTs = ((a.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
-      const bTs = ((b.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
+      const aTs =
+        ((a.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
+      const bTs =
+        ((b.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
       return aTs - bTs;
     });
 
-    const fromLoc = (swissData as any)?.from ?? dbConnections[0]?.from?.station ?? null;
-    const toLoc = (swissData as any)?.to ?? dbConnections[0]?.to?.station ?? null;
+    // Derive display locations: prefer SBB response, fall back to first DB connection
+    const fromLoc =
+      (swissData as any)?.from ??
+      (dbConnections[0]?.from as any)?.station ??
+      null;
+    const toLoc =
+      (swissData as any)?.to ??
+      (dbConnections[0]?.to as any)?.station ??
+      null;
 
     res.json({ from: fromLoc, to: toLoc, connections: merged });
   } catch (error) {
