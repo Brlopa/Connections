@@ -43,7 +43,7 @@ async function fetchTransport(
 async function fetchDb(
   path: string,
   params: Record<string, string | number | boolean | undefined | string[]>,
-  timeoutMs = 6000, // Strikte Limitierung der Latenz auf 6 Sekunden
+  timeoutMs = 6000,
 ): Promise<unknown> {
   const url = new URL(`${DB_API_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) {
@@ -67,7 +67,6 @@ async function fetchDb(
     if (!res.ok) throw new Error(`DB API ${res.status}`);
     return await res.json();
   } catch (err) {
-    // Fehlervektor wird auf null abgebildet. Verhindert Prozess-Crashes bei Timeouts.
     return null;
   } finally {
     clearTimeout(timer);
@@ -164,7 +163,6 @@ function normalizeDbJourney(journey: Record<string, unknown>): Record<string, un
   const lastSection = sections[sections.length - 1] as Record<string, unknown> | undefined;
 
   return {
-    // Extrahiert explizit die Checkpoint-Struktur, nicht die rohen Locations
     from: firstSection?.departure ?? null,
     to: lastSection?.arrival ?? null,
     duration: durationStr,
@@ -177,6 +175,16 @@ function normalizeDbJourney(journey: Record<string, unknown>): Record<string, un
 
 router.get("/transport/locations", async (req, res): Promise<void> => {
   try {
+    // Coordinate-based search (geolocation: x=latitude, y=longitude) — bypass text-search schema
+    if (req.query.x && req.query.y) {
+      const x = String(req.query.x);
+      const y = String(req.query.y);
+      const type = typeof req.query.type === "string" ? req.query.type : undefined;
+      const data = await fetchTransport("/locations", { x, y, type }).catch(() => ({ stations: [] }));
+      res.json(data);
+      return;
+    }
+
     const parsed = SearchLocationsQueryParams.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -226,12 +234,23 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
-    const parsed = SearchConnectionsQueryParams.safeParse(req.query);
+    // Normalize via — Express parses a single query param as a string, but the schema expects array
+    const rawQuery = { ...req.query };
+    if (rawQuery.via !== undefined && !Array.isArray(rawQuery.via)) {
+      rawQuery.via = [rawQuery.via as string];
+    }
+
+    // Extract DB station IDs separately — they are not part of the generated OpenAPI schema
+    // and Zod will strip unknown fields, so we must read them from the raw query.
+    const fromDbId = typeof req.query.fromDbId === "string" ? req.query.fromDbId : undefined;
+    const toDbId = typeof req.query.toDbId === "string" ? req.query.toDbId : undefined;
+
+    const parsed = SearchConnectionsQueryParams.safeParse(rawQuery);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
-    const { from, to, via, date, time, isArrivalTime, limit, fromDbId, toDbId } = parsed.data;
+    const { from, to, via, date, time, isArrivalTime, limit } = parsed.data;
 
     const dateStr = date ?? new Date().toISOString().split("T")[0];
     const timeStr = time ?? `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
@@ -257,11 +276,28 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
         if (!resolvedFromId || !resolvedToId) return null;
 
         const departure = `${dateStr}T${timeStr}:00`;
-        const result = await fetchDb(
-          "/journeys",
-          { from: resolvedFromId, to: resolvedToId, departure, results: limit ?? 5, stopovers: false },
-          6000
-        );
+
+        // Build DB API params — include via if provided (look up first via station ID)
+        const dbParams: Record<string, string | number | boolean | string[]> = {
+          from: resolvedFromId,
+          to: resolvedToId,
+          departure,
+          results: limit ?? 5,
+          stopovers: false,
+        };
+
+        // Optionally resolve via station ID for DB API
+        if (via && via.length > 0) {
+          try {
+            const viaResult = await fetchDb("/locations", { query: via[0], results: 1 }, 2000);
+            const viaId = (viaResult as any[])?.[0]?.id;
+            if (viaId) dbParams.via = viaId;
+          } catch {
+            // via lookup failed — proceed without it
+          }
+        }
+
+        const result = await fetchDb("/journeys", dbParams, 6000);
         return result;
       } catch {
         return null;
