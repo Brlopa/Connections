@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import {
+  SearchLocationsQueryParams,
   SearchConnectionsQueryParams,
   GetStationboardQueryParams,
 } from "@workspace/api-zod";
@@ -7,6 +8,7 @@ import {
 const router: IRouter = Router();
 
 const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
+const DB_API_BASE = "https://v6.db.transport.rest";
 
 // ── fetch helpers ──────────────────────────────────────────────
 
@@ -16,11 +18,9 @@ async function fetchTransport(
   timeoutMs = 10000,
 ): Promise<unknown> {
   const url = new URL(`${TRANSPORT_API_BASE}${path}`);
-
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") {
       if (Array.isArray(v)) {
-        // The transport API requires array notation: via[]=City1&via[]=City2
         v.forEach((val) => url.searchParams.append(`${k}[]`, String(val)));
       } else {
         url.searchParams.set(k, String(v));
@@ -40,77 +40,278 @@ async function fetchTransport(
   }
 }
 
+async function fetchDb(
+  path: string,
+  params: Record<string, string | number | boolean | undefined | string[]>,
+  timeoutMs = 6000, // Strikte Limitierung der Latenz auf 6 Sekunden
+): Promise<unknown> {
+  const url = new URL(`${DB_API_BASE}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") {
+       if (Array.isArray(v)) {
+        v.forEach((val) => url.searchParams.append(k, String(val)));
+      } else {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { "Accept-Encoding": "gzip" },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`DB API ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    // Fehlervektor wird auf null abgebildet. Verhindert Prozess-Crashes bei Timeouts.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── normalizers (Mapping DB Schema -> OpenData Schema) ──────────
+
+function normalizeDbLocation(loc: Record<string, unknown>): Record<string, unknown> {
+  const location = loc.location as Record<string, unknown> | null | undefined;
+  return {
+    id: loc.id ?? null,
+    name: loc.name ?? null,
+    type: "station",
+    score: null,
+    coordinate: location
+      ? { type: "WGS84", x: location.latitude ?? null, y: location.longitude ?? null }
+      : null,
+  };
+}
+
+function dbProductToCategory(line: Record<string, unknown>): string {
+  const p = String(line.product ?? "");
+  if (p === "nationalExpress") return "ICE";
+  if (p === "national") return "IC";
+  if (p === "regionalExpress") return "RE";
+  if (p === "regional") return "R";
+  if (p === "suburban") return "S";
+  if (p === "bus") return "B";
+  return String(line.name ?? "").split(" ")[0] ?? "";
+}
+
+function normalizeDbLeg(leg: Record<string, unknown>): Record<string, unknown> {
+  const line = leg.line as Record<string, unknown> | null | undefined;
+  const origin = (leg.origin as Record<string, unknown>) ?? {};
+  const destination = (leg.destination as Record<string, unknown>) ?? {};
+  const isWalk = leg.walking === true || !line;
+
+  const depStr = (leg.plannedDeparture ?? leg.departure) as string | null | undefined;
+  const arrStr = (leg.plannedArrival ?? leg.arrival) as string | null | undefined;
+  const depTs = depStr ? Math.floor(new Date(depStr).getTime() / 1000) : null;
+  const arrTs = arrStr ? Math.floor(new Date(arrStr).getTime() / 1000) : null;
+
+  const depDelay = leg.departureDelay as number | null | undefined;
+  const arrDelay = leg.arrivalDelay as number | null | undefined;
+
+  return {
+    journey: line
+      ? {
+          name: line.name ?? "",
+          category: dbProductToCategory(line),
+          number: line.id ?? "",
+          to: leg.direction ?? "",
+          passList: [],
+        }
+      : null,
+    walk: isWalk ? { duration: depTs && arrTs ? arrTs - depTs : null, distance: leg.distance ?? null } : null,
+    departure: {
+      station: normalizeDbLocation(origin),
+      departure: depStr ?? null,
+      departureTimestamp: depTs,
+      delay: depDelay != null ? Math.round(depDelay / 60) : null,
+      platform: leg.departurePlatform ?? null,
+    },
+    arrival: {
+      station: normalizeDbLocation(destination),
+      arrival: arrStr ?? null,
+      arrivalTimestamp: arrTs,
+      delay: arrDelay != null ? Math.round(arrDelay / 60) : null,
+      platform: leg.arrivalPlatform ?? null,
+    },
+    passList: [],
+  };
+}
+
+function normalizeDbJourney(journey: Record<string, unknown>): Record<string, unknown> {
+  const legs = (journey.legs as Array<Record<string, unknown>>) ?? [];
+  const sections = legs.map(normalizeDbLeg);
+  
+  const depMs = legs[0] ? new Date(String(legs[0].departure ?? "")).getTime() : NaN;
+  const arrMs = legs[legs.length - 1] ? new Date(String(legs[legs.length - 1].arrival ?? "")).getTime() : NaN;
+  
+  let durationStr = null;
+  if (!isNaN(depMs) && !isNaN(arrMs)) {
+    const durationMin = Math.round((arrMs - depMs) / 60000);
+    const days = Math.floor(durationMin / 1440);
+    const hours = Math.floor((durationMin % 1440) / 60);
+    const mins = durationMin % 60;
+    durationStr = `${String(days).padStart(2, "0")}d${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:00`;
+  }
+
+  const vehicleLegs = legs.filter((l) => l.line);
+  const firstSection = sections[0] as Record<string, unknown> | undefined;
+  const lastSection = sections[sections.length - 1] as Record<string, unknown> | undefined;
+
+  return {
+    // Extrahiert explizit die Checkpoint-Struktur, nicht die rohen Locations
+    from: firstSection?.departure ?? null,
+    to: lastSection?.arrival ?? null,
+    duration: durationStr,
+    transfers: Math.max(0, vehicleLegs.length - 1),
+    sections,
+  };
+}
+
 // ── routes ─────────────────────────────────────────────────────
 
 router.get("/transport/locations", async (req, res): Promise<void> => {
   try {
-    const { query, type, x, y } = req.query as Record<string, string | undefined>;
-
-    // The API supports either a text query OR coordinate-based (x + y) lookup.
-    const hasQuery = query && query.trim() !== "";
-    const hasCoords = x && y;
-
-    if (!hasQuery && !hasCoords) {
-      res.status(400).json({
-        error: "Either 'query' or both 'x' and 'y' parameters are required.",
-      });
+    const parsed = SearchLocationsQueryParams.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.message });
       return;
     }
+    const { query, type } = parsed.data;
 
-    const params: Record<string, string> = {};
-    if (hasQuery) params.query = query!;
-    if (type)     params.type  = type;
-    if (x)        params.x     = x;
-    if (y)        params.y     = y;
+    // Parallele Evaluierung beider Datenräume
+    const [swissResult, dbResult] = await Promise.allSettled([
+      fetchTransport("/locations", { query, type }),
+      fetchDb("/locations", { query, results: 8, fuzzy: true }),
+    ]);
 
-    const data = await fetchTransport("/locations", params);
-    const stations = (data as Record<string, unknown>)?.stations ?? [];
+    const swissStations: Record<string, unknown>[] =
+      swissResult.status === "fulfilled"
+        ? ((swissResult.value as Record<string, unknown>)?.stations as Record<string, unknown>[]) ?? []
+        : [];
 
-    res.json({ stations });
+    const dbRaw: Record<string, unknown>[] =
+      dbResult.status === "fulfilled" && Array.isArray(dbResult.value)
+        ? (dbResult.value as Record<string, unknown>[]).filter((l) => l.type === "station")
+        : [];
+
+    const dbByName = new Map<string, Record<string, unknown>>();
+    for (const dbStn of dbRaw) {
+      const name = String(dbStn.name ?? "").toLowerCase();
+      if (name) dbByName.set(name, dbStn);
+    }
+
+    // Kreuzreferenzierung: Zuweisung der dbId an SBB Stationen für nachfolgende Graphen-Routings
+    const enrichedSwiss = swissStations.map((s) => {
+      const nameLower = String(s.name ?? "").toLowerCase();
+      const dbMatch = dbByName.get(nameLower);
+      if (dbMatch) {
+        dbByName.delete(nameLower);
+        return { ...s, dbId: dbMatch.id ?? null };
+      }
+      return s;
+    });
+
+    const dbOnlyStations = Array.from(dbByName.values()).map(normalizeDbLocation);
+    res.json({ stations: [...enrichedSwiss, ...dbOnlyStations] });
   } catch (error) {
-    console.error("[Locations API Error]", error);
     res.status(500).json({ error: "Failed to process location search request." });
   }
 });
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
-    // Normalize `via` to always be an array before Zod validation.
-    // Express parses a single ?via=Bern as a string, but multiple values as
-    // an array. The Zod schema expects an array in both cases.
-    const rawQuery = { ...req.query };
-    if (rawQuery.via !== undefined && !Array.isArray(rawQuery.via)) {
-      rawQuery.via = [rawQuery.via as string];
-    }
-
-    const parsed = SearchConnectionsQueryParams.safeParse(rawQuery);
+    const parsed = SearchConnectionsQueryParams.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+    const { from, to, via, date, time, isArrivalTime, limit, fromDbId, toDbId } = parsed.data;
 
-    const { from, to, via, date, time, isArrivalTime, limit } = parsed.data;
+    const dateStr = date ?? new Date().toISOString().split("T")[0];
+    const timeStr = time ?? `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
 
-    // Filter out empty strings from a cleared via input
-    const viaFiltered = via?.filter((v) => v.trim() !== "");
+    const swissPromise = fetchTransport("/connections", { from, to, via, date, time, isArrivalTime, limit }).catch(() => null);
 
-    const data = await fetchTransport("/connections", {
-      from,
-      to,
-      ...(viaFiltered && viaFiltered.length > 0 ? { via: viaFiltered } : {}),
-      date,
-      time,
-      isArrivalTime,
-      limit,
+    // Sekundäre Vektorberechnung (DB)
+    const dbPromise = (async () => {
+      try {
+        let resolvedFromId = fromDbId;
+        let resolvedToId = toDbId;
+
+        // Wenn keine IDs übergeben wurden, Versuch einer iterativen Auflösung
+        if (!resolvedFromId || !resolvedToId) {
+          const [fromResult, toResult] = await Promise.all([
+            !resolvedFromId ? fetchDb("/locations", { query: from, results: 1 }, 3000) : null,
+            !resolvedToId ? fetchDb("/locations", { query: to, results: 1 }, 3000) : null,
+          ]);
+          if (!resolvedFromId) resolvedFromId = (fromResult as any[])?.[0]?.id;
+          if (!resolvedToId) resolvedToId = (toResult as any[])?.[0]?.id;
+        }
+
+        if (!resolvedFromId || !resolvedToId) return null;
+
+        const departure = `${dateStr}T${timeStr}:00`;
+        const result = await fetchDb(
+          "/journeys",
+          { from: resolvedFromId, to: resolvedToId, departure, results: limit ?? 5, stopovers: false },
+          6000
+        );
+        return result;
+      } catch {
+        return null;
+      }
+    })();
+
+    const [swissData, dbData] = await Promise.all([swissPromise, dbPromise]);
+
+    const swissConnections: Record<string, unknown>[] = (swissData as any)?.connections ?? [];
+    const dbJourneys: Record<string, unknown>[] = (dbData as any)?.journeys ?? [];
+    const dbConnections = dbJourneys.map(normalizeDbJourney);
+
+    const merged = [...swissConnections];
+
+    // Mengen-Subtraktion: Identifikation und Filterung des Schnittbereichs
+    for (const dbConn of dbConnections) {
+      const dbSections = (dbConn.sections as any[]) ?? [];
+      const dbDep = dbSections[0]?.departure?.departure;
+      const dbArr = dbSections[dbSections.length - 1]?.arrival?.arrival;
+
+      const isDupe = merged.some((c) => {
+        const cSections = (c.sections as any[]) ?? [];
+        const cDep = cSections[0]?.departure?.departure;
+        const cArr = cSections[cSections.length - 1]?.arrival?.arrival;
+        if (!dbDep || !cDep || !dbArr || !cArr) return false;
+        
+        // Epsilon = 90000ms (90 Sekunden)
+        return (
+          Math.abs(new Date(dbDep).getTime() - new Date(cDep).getTime()) < 90_000 &&
+          Math.abs(new Date(dbArr).getTime() - new Date(cArr).getTime()) < 90_000
+        );
+      });
+
+      if (!isDupe) {
+        merged.push(dbConn);
+      }
+    }
+
+    // Sortierung der Vektoren nach der diskreten Abfahrtszeit
+    merged.sort((a, b) => {
+      const aTs = ((a.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
+      const bTs = ((b.sections as any[])?.[0]?.departure?.departureTimestamp as number) ?? 0;
+      return aTs - bTs;
     });
 
-    const connections = (data as Record<string, unknown>)?.connections ?? [];
-    const fromLoc    = (data as Record<string, unknown>)?.from ?? null;
-    const toLoc      = (data as Record<string, unknown>)?.to   ?? null;
+    const fromLoc = (swissData as any)?.from ?? dbConnections[0]?.from?.station ?? null;
+    const toLoc = (swissData as any)?.to ?? dbConnections[0]?.to?.station ?? null;
 
-    res.json({ from: fromLoc, to: toLoc, connections });
+    res.json({ from: fromLoc, to: toLoc, connections: merged });
   } catch (error) {
-    console.error("[Connections API Error]", error);
     res.status(500).json({ error: "Failed to process connection search request." });
   }
 });
@@ -126,7 +327,6 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
     const data = await fetchTransport("/stationboard", { station, limit, type });
     res.json(data);
   } catch (error) {
-    console.error("[Stationboard API Error]", error);
     res.status(500).json({ error: "Failed to process stationboard request." });
   }
 });
