@@ -10,7 +10,7 @@ const MARKER_COLORS = {
   arrival: "#dc2626",
   transfer: "#d97706",
   passing: "#94a3b8",
-  walk: "#f59e0b",
+  walk: "#0b26f5",
 };
 
 const MARKER_SIZES = {
@@ -41,6 +41,7 @@ interface StopPoint {
   platform?: string | null;
   delay?: number | null;
   type: "departure" | "arrival" | "transfer" | "passing" | "walk-start" | "walk-end";
+  _priority: number;
 }
 
 interface WalkSegment {
@@ -65,48 +66,54 @@ function hasCoords(cp: Checkpoint | null | undefined): cp is Checkpoint & { stat
   return !!(cp?.station?.coordinate?.x && cp?.station?.coordinate?.y);
 }
 
-// Extrahiert Marker-Knoten ohne Redundanz
+// Extrahiert Marker-Knoten basierend auf Prioritätsgewichtung
 function extractStops(connection: Connection): StopPoint[] {
   const stopsMap = new Map<string, StopPoint>();
 
-  const addStop = (cp: Checkpoint | null | undefined, type: StopPoint["type"]) => {
+  const addStop = (cp: Checkpoint | null | undefined, type: StopPoint["type"], priority: number) => {
     if (!hasCoords(cp)) return;
     const lat = cp.station.coordinate.x!;
     const lng = cp.station.coordinate.y!;
     const key = `${lat},${lng}`;
     
-    if (!stopsMap.has(key)) {
+    const existing = stopsMap.get(key);
+    if (!existing || priority > existing._priority) {
       stopsMap.set(key, {
         lat, lng,
         name: cp.station.name || "Stop",
         time: formatTime(cp.departure ?? cp.arrival),
         platform: cp.platform,
         delay: cp.delay,
-        type
+        type,
+        _priority: priority
       });
-    } else {
-      const existing = stopsMap.get(key)!;
-      if (type === 'departure' || type === 'arrival' || type === 'transfer') {
-        existing.type = type;
-      }
     }
   };
 
-  addStop(connection.from, "departure");
-  
+  // 1. Initialer Suchpunkt (Priorität 3)
+  addStop(connection.from, "departure", 3);
+
   connection.sections.forEach((sec, i) => {
     const isLast = i === connection.sections.length - 1;
+
+    // Abfahrtsstation des Teilabschnitts (Priorität 2)
+    addStop(sec.departure, "transfer", 2);
+
     if (sec.journey?.passList) {
       sec.journey.passList.forEach((p, j) => {
         const isTransfer = j === sec.journey!.passList.length - 1 && !isLast;
-        addStop(p, isTransfer ? "transfer" : "passing");
+        addStop(p, isTransfer ? "transfer" : "passing", isTransfer ? 2 : 1);
       });
     } else if (!isLast) {
-      addStop(sec.arrival, "transfer");
+      addStop(sec.arrival, "transfer", 2);
     }
+    
+    // Ankunftsstation des Teilabschnitts (Priorität 2)
+    addStop(sec.arrival, "transfer", 2);
   });
 
-  addStop(connection.to, "arrival");
+  // 3. Finaler Zielpunkt (Priorität 3)
+  addStop(connection.to, "arrival", 3);
   return Array.from(stopsMap.values());
 }
 
@@ -133,9 +140,31 @@ function extractTransitSegments(connection: Connection): TransitSegment[] {
   return segments;
 }
 
-// Extrahiert exklusiv Gehweg-Vektoren (S_walk)
+// Extrahiert Gehweg-Vektoren inkl. impliziter Erste- und Letzte-Meile Berechnungen
 function extractWalkSegments(connection: Connection): WalkSegment[] {
   const walks: WalkSegment[] = [];
+
+  // Berechnet das Delta zweier Vektoren, Schwellenwert: 0.0001° (~10m)
+  const isSignificantGap = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    return Math.abs(lat1 - lat2) > 0.0001 || Math.abs(lon1 - lon2) > 0.0001;
+  };
+
+  // 1. Implizite Erste Meile: connection.from -> section[0].departure
+  if (connection.sections.length > 0 && hasCoords(connection.from) && hasCoords(connection.sections[0].departure)) {
+    const p1 = connection.from.station.coordinate;
+    const p2 = connection.sections[0].departure.station.coordinate;
+    if (isSignificantGap(p1.x!, p1.y!, p2.x!, p2.y!)) {
+      walks.push({
+        id: `walk-implicit-start`,
+        start: [p1.x!, p1.y!],
+        end: [p2.x!, p2.y!],
+        duration: null,
+        distance: null,
+      });
+    }
+  }
+
+  // 2. Explizite Segmente der API
   connection.sections.forEach((sec, i) => {
     if (!sec.journey && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
       walks.push({
@@ -147,6 +176,25 @@ function extractWalkSegments(connection: Connection): WalkSegment[] {
       });
     }
   });
+
+  // 3. Implizite Letzte Meile: section[last].arrival -> connection.to
+  if (connection.sections.length > 0 && hasCoords(connection.to)) {
+    const lastSec = connection.sections[connection.sections.length - 1];
+    if (hasCoords(lastSec.arrival)) {
+      const p1 = lastSec.arrival.station.coordinate;
+      const p2 = connection.to.station.coordinate;
+      if (isSignificantGap(p1.x!, p1.y!, p2.x!, p2.y!)) {
+        walks.push({
+          id: `walk-implicit-end`,
+          start: [p1.x!, p1.y!],
+          end: [p2.x!, p2.y!],
+          duration: null,
+          distance: null,
+        });
+      }
+    }
+  }
+
   return walks;
 }
 
@@ -161,7 +209,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const [mapReady, setMapReady] = useState(false);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   
-  // Zustand für berechnete GeoJSON-Geometrien
   const [walkGeometries, setWalkGeometries] = useState<Record<string, any>>({});
 
   const stops = useMemo(() => extractStops(connection), [connection]);
@@ -195,7 +242,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Asynchrone Routenberechnung für S_walk
   useEffect(() => {
     let isMounted = true;
     const fetchWalkRoutes = async () => {
@@ -206,7 +252,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       let hasNewGeometries = false;
 
       for (const walk of walks) {
-        // Unterbinde Fetch bei 0-Distanz (Identische Start- und Endkoordinate)
         if (walk.start[0] === walk.end[0] && walk.start[1] === walk.end[1]) continue;
 
         setWalkGeometries((current) => {
@@ -222,7 +267,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           if (!res.ok) continue;
           
           const data = await res.json();
-          // Übernahme der nativen GeoJSON-Struktur
           if (data.features && data.features.length > 0) {
             resolvedGeometries[walk.id] = data.features[0].geometry;
             hasNewGeometries = true;
@@ -242,7 +286,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
     return () => { isMounted = false; };
   }, [walks]);
 
-  // Vektorisierung und Layer-Verwaltung
   useEffect(() => {
     if (!map.current || !mapReady) return;
 
@@ -258,7 +301,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current.removeSource("walks-source");
     }
 
-    // Konstruktion der Transit-Polygone (S_transit)
     if (transitSegments.length > 0) {
       const transitFeatures = transitSegments.map(seg => ({
         type: "Feature" as const,
@@ -289,10 +331,8 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       });
     }
 
-    // Konstruktion der Gehweg-Polygone (S_walk)
     if (walks.length > 0) {
       const walkFeatures = walks.map((walk) => {
-        // Verknüpfung der berechneten Route, bei Fehlern Rückfall auf lineare Interpolation
         const geom = walkGeometries[walk.id] || {
           type: "LineString",
           coordinates: [
@@ -321,15 +361,14 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         type: "line",
         source: "walks-source",
         paint: {
-          "line-color": "#f59e0b",
-          "line-width": 3,
-          "line-opacity": 0.85,
+          "line-color": "#0b26f5",
+          "line-width": 5,
+          "line-opacity": 1,
           "line-dasharray": [1, 1],
         },
       });
     }
 
-    // Platzierung der Topologischen Knoten (Marker)
     stops.forEach((stop) => {
       const type = stop.type === "walk-start" || stop.type === "walk-end" ? "walk" : stop.type;
       const color = MARKER_COLORS[type as keyof typeof MARKER_COLORS] || MARKER_COLORS.passing;
