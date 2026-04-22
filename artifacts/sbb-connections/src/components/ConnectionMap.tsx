@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { format, parseISO } from "date-fns";
 import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -169,8 +169,9 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const [walkGeometries, setWalkGeometries] = useState<Record<string, [number, number][]>>({});
 
-  const stops = extractStops(connection);
-  const walks = extractWalkSegments(connection);
+  // 1. Stabilisierung der Referenzen über useMemo
+  const stops = useMemo(() => extractStops(connection), [connection]);
+  const walks = useMemo(() => extractWalkSegments(connection), [connection]);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -198,19 +199,25 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current?.remove();
       map.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch precise routing paths for walks asynchronously
+  // 2. Isolierter Fetch-Zyklus ohne zirkuläre Abhängigkeit
   useEffect(() => {
+    let isMounted = true;
+
     const fetchWalkRoutes = async () => {
       const apiKey = import.meta.env.VITE_GEOAPIFY_API_KEY; 
       if (!apiKey || walks.length === 0) return;
 
       const resolvedGeometries: Record<string, [number, number][]> = {};
+      let hasNewGeometries = false;
 
       for (const walk of walks) {
-        if (walkGeometries[walk.id]) continue;
+        // Redundante Abfragen blockieren (greift auf den State via Funktions-Closure zu)
+        setWalkGeometries((currentGeometries) => {
+            if (currentGeometries[walk.id]) return currentGeometries;
+            return currentGeometries;
+        });
 
         const waypoints = `${walk.start[0]},${walk.start[1]}|${walk.end[0]},${walk.end[1]}`;
         const url = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${apiKey}`;
@@ -221,21 +228,38 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           
           const data = await res.json();
           if (data.features && data.features.length > 0) {
-            // Geoapify natively returns coordinates as [lng, lat], compatible with MapLibre
-            resolvedGeometries[walk.id] = data.features[0].geometry.coordinates[0];
+            const geometry = data.features[0].geometry;
+            let flatCoords: [number, number][] = [];
+            
+            // 3. Mathematische Transformation der Tensoren
+            if (geometry.type === "MultiLineString") {
+              flatCoords = geometry.coordinates.flat(1) as [number, number][];
+            } else if (geometry.type === "LineString") {
+              flatCoords = geometry.coordinates as [number, number][];
+            }
+
+            if (flatCoords.length > 0) {
+              resolvedGeometries[walk.id] = flatCoords;
+              hasNewGeometries = true;
+            }
           }
         } catch (error) {
           console.error(`Route calculation failed for segment ${walk.id}`, error);
         }
       }
 
-      if (Object.keys(resolvedGeometries).length > 0) {
+      if (isMounted && hasNewGeometries) {
         setWalkGeometries((prev) => ({ ...prev, ...resolvedGeometries }));
       }
     };
 
     fetchWalkRoutes();
-  }, [walks, walkGeometries]);
+
+    return () => {
+      isMounted = false;
+    };
+  // Entfernen von walkGeometries aus dem Dependency Array verhindert Zyklen
+  }, [walks]); 
 
   useEffect(() => {
     if (!map.current || !mapReady) return;
@@ -281,7 +305,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
     if (walks.length > 0) {
       const walkFeatures = walks.map((walk) => {
-        // Fallback to strict [lng, lat] coordinate translation if precise geometry is unavailable
         const coords = walkGeometries[walk.id] || [
           [walk.start[1], walk.start[0]],
           [walk.end[1], walk.end[0]],
