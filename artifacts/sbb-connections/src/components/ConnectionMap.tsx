@@ -63,7 +63,7 @@ function hasCoords(cp: Checkpoint | null | undefined): cp is Checkpoint & { stat
 function extractStops(connection: Connection): StopPoint[] {
   const stops: StopPoint[] = [];
 
-  // Departure
+  // Overall departure
   if (hasCoords(connection.from)) {
     stops.push({
       lat: connection.from.station.coordinate.x!,
@@ -76,37 +76,60 @@ function extractStops(connection: Connection): StopPoint[] {
     });
   }
 
-  // Walk through sections
   for (let i = 0; i < connection.sections.length; i++) {
     const section = connection.sections[i];
     const journey = section.journey;
+    const isLastSection = i === connection.sections.length - 1;
 
-    if (journey?.passList) {
-      for (let j = 0; j < journey.passList.length; j++) {
-        const cp = journey.passList[j];
+    // Skip walk-only sections (no vehicle)
+    if (!journey) continue;
+
+    const passList = journey.passList ?? [];
+
+    if (passList.length > 0) {
+      // Swiss API path: use passList for all intermediate stops
+      for (let j = 0; j < passList.length; j++) {
+        const cp = passList[j];
         if (!hasCoords(cp)) continue;
         const lat = cp.station.coordinate.x!;
         const lng = cp.station.coordinate.y!;
-        // Skip if this is already the departure or last stop
-        const isFirst = j === 0 && i === 0;
-        const isLast = j === journey.passList.length - 1 && i === connection.sections.length - 1;
-        if (isFirst || isLast) continue;
-        // Check if this is a transfer (last stop of this section AND not last section)
-        const isTransferPoint = j === journey.passList.length - 1 && i < connection.sections.length - 1;
+
+        // The first stop of section 0 is already added as the overall departure
+        const isOverallDeparture = j === 0 && i === 0;
+        // The last stop of the final section is already added as the overall arrival
+        const isOverallArrival = j === passList.length - 1 && isLastSection;
+        if (isOverallDeparture || isOverallArrival) continue;
+
+        // Last stop of a non-final section = transfer point
+        const isTransferPoint = j === passList.length - 1 && !isLastSection;
         stops.push({
           lat,
           lng,
           name: cp.station.name || "Stop",
-          time: formatTime(cp.departure || cp.arrival),
+          time: formatTime(cp.departure ?? cp.arrival),
           platform: cp.platform,
           delay: cp.delay,
           type: isTransferPoint ? "transfer" : "passing",
         });
       }
+    } else if (!isLastSection) {
+      // DB API path: passList is always empty — use section arrival as the transfer station.
+      // We skip the final section because its arrival is already the overall destination.
+      if (hasCoords(section.arrival)) {
+        stops.push({
+          lat: section.arrival.station.coordinate.x!,
+          lng: section.arrival.station.coordinate.y!,
+          name: section.arrival.station.name || "Transfer",
+          time: formatTime(section.arrival.arrival),
+          platform: section.arrival.platform,
+          delay: section.arrival.delay,
+          type: "transfer",
+        });
+      }
     }
   }
 
-  // Arrival
+  // Overall arrival
   if (hasCoords(connection.to)) {
     stops.push({
       lat: connection.to.station.coordinate.x!,
@@ -127,43 +150,17 @@ function extractWalkSegments(connection: Connection): WalkSegment[] {
 
   for (const section of connection.sections) {
     if (section.walk && !section.journey && hasCoords(section.departure) && hasCoords(section.arrival)) {
+      const walkData = section.walk as unknown as Record<string, unknown> | null;
       walks.push({
         start: [section.departure.station.coordinate.x!, section.departure.station.coordinate.y!],
         end: [section.arrival.station.coordinate.x!, section.arrival.station.coordinate.y!],
-        duration: section.walk.duration || null,
-        distance: section.walk.distance || null,
+        duration: (walkData?.duration as number | null) ?? null,
+        distance: (walkData?.distance as number | null) ?? null,
       });
     }
   }
 
   return walks;
-}
-
-function FitBounds({ map, stops }: { map: MapLibreMap | null; stops: StopPoint[] }) {
-  useEffect(() => {
-    if (!map || stops.length === 0) return;
-
-    if (stops.length === 1) {
-      map.flyTo({
-        center: [stops[0].lng, stops[0].lat],
-        zoom: 13,
-        duration: 1000,
-      });
-      return;
-    }
-
-    const coordinates = stops.map((s) => [s.lng, s.lat]) as [number, number][];
-    const bounds = coordinates.reduce(
-      (bounds, coord) => {
-        return bounds.extend(coord);
-      },
-      new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
-    );
-
-    map.fitBounds(bounds, { padding: 32, duration: 1000 });
-  }, [map, stops]);
-
-  return null;
 }
 
 interface ConnectionMapProps {
@@ -184,7 +181,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   useEffect(() => {
     if (!mapContainer.current) return;
 
-    // Calculate center vector: use median stop or default to central Europe
     const center: [number, number] =
       stops.length > 0
         ? [stops[Math.floor(stops.length / 2)].lng, stops[Math.floor(stops.length / 2)].lat]
@@ -198,7 +194,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       attributionControl: true,
     });
 
-    // Add Fullscreen Control to the top-right corner
     map.current.addControl(new maplibregl.FullscreenControl(), "top-right");
 
     map.current.on("load", () => {
@@ -209,7 +204,8 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current?.remove();
       map.current = null;
     };
-  }, [stops.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Add markers and polylines when map is ready
   useEffect(() => {
@@ -219,7 +215,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
     markersRef.current.forEach((marker) => marker.remove());
     markersRef.current = [];
 
-    // Remove existing source and layers if they exist
+    // Remove existing layers/sources
     if (map.current.getSource("route-source")) {
       map.current.removeLayer("route-line");
       map.current.removeSource("route-source");
@@ -229,7 +225,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current.removeSource("walks-source");
     }
 
-    // Add transit route polyline
+    // Transit route polyline (connects all stop points in order)
     if (stops.length > 1) {
       const routeCoordinates = stops.map((s) => [s.lng, s.lat]) as [number, number][];
 
@@ -257,7 +253,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       });
     }
 
-    // Add walking routes
+    // Walking routes (dashed)
     if (walks.length > 0) {
       const walkFeatures = walks.map((walk) => ({
         type: "Feature" as const,
@@ -289,7 +285,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       });
     }
 
-    // Add stop markers
+    // Stop markers
     stops.forEach((stop) => {
       const type = stop.type === "walk-start" || stop.type === "walk-end" ? "walk" : stop.type;
       const color = MARKER_COLORS[type as keyof typeof MARKER_COLORS] || MARKER_COLORS.passing;
@@ -324,10 +320,9 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
     });
   }, [mapReady, stops, walks]);
 
-  // Fit bounds
+  // Fit bounds to show all stops
   useEffect(() => {
-    if (!map.current) return;
-    if (stops.length === 0) return;
+    if (!map.current || stops.length === 0) return;
 
     if (stops.length === 1) {
       map.current.flyTo({
@@ -340,9 +335,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
     const coordinates = stops.map((s) => [s.lng, s.lat]) as [number, number][];
     const bounds = coordinates.reduce(
-      (bounds, coord) => {
-        return bounds.extend(coord);
-      },
+      (bounds, coord) => bounds.extend(coord),
       new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
     );
 
