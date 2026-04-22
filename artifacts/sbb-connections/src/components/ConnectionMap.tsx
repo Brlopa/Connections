@@ -45,8 +45,9 @@ interface StopPoint {
 }
 
 interface WalkSegment {
-  start: [number, number];
-  end: [number, number];
+  id: string;
+  start: [number, number]; // [lat, lng]
+  end: [number, number];   // [lat, lng]
   duration: number | null;
   distance: number | null;
 }
@@ -63,7 +64,6 @@ function hasCoords(cp: Checkpoint | null | undefined): cp is Checkpoint & { stat
 function extractStops(connection: Connection): StopPoint[] {
   const stops: StopPoint[] = [];
 
-  // Overall departure
   if (hasCoords(connection.from)) {
     stops.push({
       lat: connection.from.station.coordinate.x!,
@@ -81,26 +81,21 @@ function extractStops(connection: Connection): StopPoint[] {
     const journey = section.journey;
     const isLastSection = i === connection.sections.length - 1;
 
-    // Skip walk-only sections (no vehicle)
     if (!journey) continue;
 
     const passList = journey.passList ?? [];
 
     if (passList.length > 0) {
-      // Swiss API path: use passList for all intermediate stops
       for (let j = 0; j < passList.length; j++) {
         const cp = passList[j];
         if (!hasCoords(cp)) continue;
         const lat = cp.station.coordinate.x!;
         const lng = cp.station.coordinate.y!;
 
-        // The first stop of section 0 is already added as the overall departure
         const isOverallDeparture = j === 0 && i === 0;
-        // The last stop of the final section is already added as the overall arrival
         const isOverallArrival = j === passList.length - 1 && isLastSection;
         if (isOverallDeparture || isOverallArrival) continue;
 
-        // Last stop of a non-final section = transfer point
         const isTransferPoint = j === passList.length - 1 && !isLastSection;
         stops.push({
           lat,
@@ -113,8 +108,6 @@ function extractStops(connection: Connection): StopPoint[] {
         });
       }
     } else if (!isLastSection) {
-      // DB API path: passList is always empty — use section arrival as the transfer station.
-      // We skip the final section because its arrival is already the overall destination.
       if (hasCoords(section.arrival)) {
         stops.push({
           lat: section.arrival.station.coordinate.x!,
@@ -129,7 +122,6 @@ function extractStops(connection: Connection): StopPoint[] {
     }
   }
 
-  // Overall arrival
   if (hasCoords(connection.to)) {
     stops.push({
       lat: connection.to.station.coordinate.x!,
@@ -148,10 +140,12 @@ function extractStops(connection: Connection): StopPoint[] {
 function extractWalkSegments(connection: Connection): WalkSegment[] {
   const walks: WalkSegment[] = [];
 
-  for (const section of connection.sections) {
+  for (let i = 0; i < connection.sections.length; i++) {
+    const section = connection.sections[i];
     if (section.walk && !section.journey && hasCoords(section.departure) && hasCoords(section.arrival)) {
       const walkData = section.walk as unknown as Record<string, unknown> | null;
       walks.push({
+        id: `walk-${i}`,
         start: [section.departure.station.coordinate.x!, section.departure.station.coordinate.y!],
         end: [section.arrival.station.coordinate.x!, section.arrival.station.coordinate.y!],
         duration: (walkData?.duration as number | null) ?? null,
@@ -173,11 +167,11 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const [walkGeometries, setWalkGeometries] = useState<Record<string, [number, number][]>>({});
 
   const stops = extractStops(connection);
   const walks = extractWalkSegments(connection);
 
-  // Initialize map
   useEffect(() => {
     if (!mapContainer.current) return;
 
@@ -207,15 +201,48 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Add markers and polylines when map is ready
+  // Fetch precise routing paths for walks asynchronously
+  useEffect(() => {
+    const fetchWalkRoutes = async () => {
+      const apiKey = import.meta.env.VITE_GEOAPIFY_API_KEY; 
+      if (!apiKey || walks.length === 0) return;
+
+      const resolvedGeometries: Record<string, [number, number][]> = {};
+
+      for (const walk of walks) {
+        if (walkGeometries[walk.id]) continue;
+
+        const waypoints = `${walk.start[0]},${walk.start[1]}|${walk.end[0]},${walk.end[1]}`;
+        const url = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${apiKey}`;
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          
+          const data = await res.json();
+          if (data.features && data.features.length > 0) {
+            // Geoapify natively returns coordinates as [lng, lat], compatible with MapLibre
+            resolvedGeometries[walk.id] = data.features[0].geometry.coordinates[0];
+          }
+        } catch (error) {
+          console.error(`Route calculation failed for segment ${walk.id}`, error);
+        }
+      }
+
+      if (Object.keys(resolvedGeometries).length > 0) {
+        setWalkGeometries((prev) => ({ ...prev, ...resolvedGeometries }));
+      }
+    };
+
+    fetchWalkRoutes();
+  }, [walks, walkGeometries]);
+
   useEffect(() => {
     if (!map.current || !mapReady) return;
 
-    // Clear existing markers
     markersRef.current.forEach((marker) => marker.remove());
     markersRef.current = [];
 
-    // Remove existing layers/sources
     if (map.current.getSource("route-source")) {
       map.current.removeLayer("route-line");
       map.current.removeSource("route-source");
@@ -225,7 +252,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current.removeSource("walks-source");
     }
 
-    // Transit route polyline (connects all stop points in order)
     if (stops.length > 1) {
       const routeCoordinates = stops.map((s) => [s.lng, s.lat]) as [number, number][];
 
@@ -253,16 +279,23 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       });
     }
 
-    // Walking routes (dashed)
     if (walks.length > 0) {
-      const walkFeatures = walks.map((walk) => ({
-        type: "Feature" as const,
-        properties: {},
-        geometry: {
-          type: "LineString" as const,
-          coordinates: [walk.start, walk.end],
-        },
-      }));
+      const walkFeatures = walks.map((walk) => {
+        // Fallback to strict [lng, lat] coordinate translation if precise geometry is unavailable
+        const coords = walkGeometries[walk.id] || [
+          [walk.start[1], walk.start[0]],
+          [walk.end[1], walk.end[0]],
+        ];
+
+        return {
+          type: "Feature" as const,
+          properties: {},
+          geometry: {
+            type: "LineString" as const,
+            coordinates: coords,
+          },
+        };
+      });
 
       map.current.addSource("walks-source", {
         type: "geojson",
@@ -285,7 +318,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       });
     }
 
-    // Stop markers
     stops.forEach((stop) => {
       const type = stop.type === "walk-start" || stop.type === "walk-end" ? "walk" : stop.type;
       const color = MARKER_COLORS[type as keyof typeof MARKER_COLORS] || MARKER_COLORS.passing;
@@ -318,9 +350,8 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
       markersRef.current.push(marker);
     });
-  }, [mapReady, stops, walks]);
+  }, [mapReady, stops, walks, walkGeometries]);
 
-  // Fit bounds to show all stops
   useEffect(() => {
     if (!map.current || stops.length === 0) return;
 

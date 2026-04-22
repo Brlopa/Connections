@@ -436,4 +436,46 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
   }
 });
 
+import { Router, Request, Response } from 'express';
+
+const router = Router();
+
+// Define the coordinate interface
+interface GeoCoordinate {
+  lat: number;
+  lon: number;
+}
+
+// Map the request to the Geoapify endpoint
+router.post('/route', async (req: Request, res: Response) => {
+  const { start, end } = req.body as { start: GeoCoordinate; end: GeoCoordinate };
+  const GEOAPIFY_KEY = process.env.GEOAPIFY_API_KEY;
+
+  if (!start || !end) {
+    return res.status(400).json({ error: 'Missing start or end coordinates' });
+  }
+
+  const waypoints = `${start.lat},${start.lon}|${end.lat},${end.lon}`;
+  const requestUrl = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${"2da5610607674a2488f1e155a56f1146"}`;
+
+  try {
+    const response = await fetch(requestUrl);
+    if (!response.ok) {
+      throw new Error(`Routing API returned status ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.features || data.features.length === 0) {
+      return res.status(404).json({ error: 'No valid path found' });
+    }
+
+    // Return the first GeoJSON feature containing the LineString
+    return res.json(data.features[0]);
+  } catch (error) {
+    console.error('Route calculation error:', error);
+    return res.status(500).json({ error: 'Internal Server Error during routing' });
+  }
+});
+
 export default router;
