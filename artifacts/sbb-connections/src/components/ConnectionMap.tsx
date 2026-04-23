@@ -362,7 +362,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         source: "walks-source",
         paint: {
           "line-color": "#0b26f5",
-          "line-width": 5,
+          "line-width": 4,
           "line-opacity": 1,
           "line-dasharray": [1, 1],
         },
