@@ -1,4 +1,5 @@
-import { Router, type IRouter } from "express";
+// artifacts/api-server/src/routes/transport.ts
+import { Router, type IRouter, Request, Response } from "express";
 import {
   SearchLocationsQueryParams,
   SearchConnectionsQueryParams,
@@ -436,10 +437,6 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
   }
 });
 
-import { Router, Request, Response } from 'express';
-
-const router = Router();
-
 // Define the coordinate interface
 interface GeoCoordinate {
   lat: number;
@@ -447,12 +444,18 @@ interface GeoCoordinate {
 }
 
 // Map the request to the Geoapify endpoint
-router.post('/route', async (req: Request, res: Response) => {
+router.post('/transport/route', async (req: Request, res: Response) => {
   const { start, end } = req.body as { start: GeoCoordinate; end: GeoCoordinate };
-  const GEOAPIFY_KEY = process.env.GEOAPIFY_API_KEY;
+  const GEOAPIFY_KEY = process.env.VITE_GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
 
   if (!start || !end) {
-    return res.status(400).json({ error: 'Missing start or end coordinates' });
+    res.status(400).json({ error: 'Missing start or end coordinates' });
+    return;
+  }
+
+  if (!GEOAPIFY_KEY) {
+    res.status(500).json({ error: 'GEOAPIFY_API_KEY environment variable is not configured.' });
+    return;
   }
 
   const waypoints = `${start.lat},${start.lon}|${end.lat},${end.lon}`;
@@ -467,14 +470,15 @@ router.post('/route', async (req: Request, res: Response) => {
     const data = await response.json();
     
     if (!data.features || data.features.length === 0) {
-      return res.status(404).json({ error: 'No valid path found' });
+      res.status(404).json({ error: 'No valid path found' });
+      return;
     }
 
     // Return the first GeoJSON feature containing the LineString
-    return res.json(data.features[0]);
+    res.json(data.features[0]);
   } catch (error) {
     console.error('Route calculation error:', error);
-    return res.status(500).json({ error: 'Internal Server Error during routing' });
+    res.status(500).json({ error: 'Internal Server Error during routing' });
   }
 });
 

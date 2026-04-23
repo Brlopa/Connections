@@ -1,3 +1,4 @@
+// artifacts/sbb-connections/src/components/ConnectionMap.tsx
 import { useEffect, useRef, useState, useMemo } from "react";
 import { format, parseISO } from "date-fns";
 import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
@@ -247,8 +248,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   useEffect(() => {
     let isMounted = true;
     const fetchWalkRoutes = async () => {
-      const apiKey = import.meta.env.VITE_GEOAPIFY_API_KEY; 
-      if (!apiKey || walks.length === 0) return;
+      if (walks.length === 0) return;
 
       const resolvedGeometries: Record<string, any> = {};
       let hasNewGeometries = false;
@@ -256,16 +256,23 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       for (const walk of walks) {
         if (walk.start[0] === walk.end[0] && walk.start[1] === walk.end[1]) continue;
 
-        const waypoints = `${walk.start[0]},${walk.start[1]}|${walk.end[0]},${walk.end[1]}`;
-        const url = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${apiKey}`;
-
         try {
-          const res = await fetch(url);
+          const res = await fetch('/api/transport/route', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              start: { lat: walk.start[0], lon: walk.start[1] },
+              end: { lat: walk.end[0], lon: walk.end[1] }
+            })
+          });
+
           if (!res.ok) continue;
           
-          const data = await res.json();
-          if (data.features && data.features.length > 0) {
-            resolvedGeometries[walk.id] = data.features[0].geometry;
+          const feature = await res.json();
+          if (feature && feature.geometry) {
+            resolvedGeometries[walk.id] = feature.geometry;
             hasNewGeometries = true;
           }
         } catch (error) {
