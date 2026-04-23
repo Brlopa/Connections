@@ -121,7 +121,8 @@ function extractStops(connection: Connection): StopPoint[] {
 function extractTransitSegments(connection: Connection): TransitSegment[] {
   const segments: TransitSegment[] = [];
   connection.sections.forEach((sec, i) => {
-    if (sec.journey && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
+    // Assert strictly !sec.walk to prevent parsing walks with empty journey objects
+    if (!sec.walk && sec.journey && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
       const coords: [number, number][] = [];
       coords.push([sec.departure.station.coordinate.y!, sec.departure.station.coordinate.x!]);
       
@@ -166,7 +167,8 @@ function extractWalkSegments(connection: Connection): WalkSegment[] {
 
   // 2. Explizite Segmente der API
   connection.sections.forEach((sec, i) => {
-    if (!sec.journey && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
+    // Correctly prioritize sec.walk evaluation over strict negations of sec.journey
+    if ((sec.walk || !sec.journey) && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
       walks.push({
         id: `walk-${i}`,
         start: [sec.departure.station.coordinate.x!, sec.departure.station.coordinate.y!],
@@ -253,11 +255,6 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
       for (const walk of walks) {
         if (walk.start[0] === walk.end[0] && walk.start[1] === walk.end[1]) continue;
-
-        setWalkGeometries((current) => {
-          if (current[walk.id]) return current;
-          return current;
-        });
 
         const waypoints = `${walk.start[0]},${walk.start[1]}|${walk.end[0]},${walk.end[1]}`;
         const url = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=walk&apiKey=${apiKey}`;
