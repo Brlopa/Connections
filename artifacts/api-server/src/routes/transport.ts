@@ -20,7 +20,7 @@ const parser = new XMLParser({
   textNodeName: "#text",
   removeNSPrefix: true,
   isArray: (name, jpath) => {
-    const arrNames = ["Location", "StopEventResult", "TripResult", "Leg", "LegIntermediate"];
+    const arrNames = ["LocationResult", "Location", "StopEventResult", "TripResult", "Leg", "LegIntermediate"];
     return arrNames.includes(name);
   }
 });
@@ -260,8 +260,20 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 </OJP>`;
 
     const data = await fetchOjp(xml);
-    const locations = data?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery?.Location || [];
-    const stations = (Array.isArray(locations) ? locations : [locations]).map((l: any) => mapOjpLocation(l));
+    const locationResults = data?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery?.LocationResult || [];
+    
+    // Extract the <Location> objects from the <LocationResult> wrappers
+    let locations = (Array.isArray(locationResults) ? locationResults : [locationResults]).map((lr: any) => lr.Location).filter(Boolean);
+    
+    // Flatten if Location is somehow an array itself
+    locations = locations.flat();
+
+    // Debugging output to terminal if nothing was found
+    if (locations.length === 0) {
+       console.log("No locations found. Raw parsed OJP response:", JSON.stringify(data?.OJP?.OJPResponse, null, 2));
+    }
+
+    const stations = locations.map((l: any) => mapOjpLocation(l));
     res.json({ stations });
   } catch (error) {
     console.error(error);
