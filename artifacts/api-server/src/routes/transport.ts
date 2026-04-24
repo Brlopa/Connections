@@ -1,5 +1,5 @@
 // artifacts/api-server/src/routes/transport.ts
-import { Router, type IRouter, Request, Response } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import {
   SearchLocationsQueryParams,
   SearchConnectionsQueryParams,
@@ -437,14 +437,12 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
   }
 });
 
-// Define the coordinate interface
 interface GeoCoordinate {
   lat: number;
   lon: number;
 }
 
-// Map the request to the Geoapify endpoint
-router.post('/transport/route', async (req: Request, res: Response) => {
+router.post('/transport/route', async (req: Request, res: Response): Promise<void> => {
   const { start, end } = req.body as { start: GeoCoordinate; end: GeoCoordinate };
   const GEOAPIFY_KEY = process.env.VITE_GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
 
@@ -474,7 +472,6 @@ router.post('/transport/route', async (req: Request, res: Response) => {
       return;
     }
 
-    // Return the first GeoJSON feature containing the LineString
     res.json(data.features[0]);
   } catch (error) {
     console.error('Route calculation error:', error);
