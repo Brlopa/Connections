@@ -247,6 +247,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
   useEffect(() => {
     let isMounted = true;
+    
     const fetchWalkRoutes = async () => {
       if (walks.length === 0) return;
 
@@ -257,6 +258,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         if (walk.start[0] === walk.end[0] && walk.start[1] === walk.end[1]) continue;
 
         try {
+          // Route over the proxy backend route to safely utilize server-side API keys
           const res = await fetch('/api/transport/route', {
             method: 'POST',
             headers: {
