@@ -59,30 +59,62 @@ function buildPlaceRef(refOrName: string) {
   return `<Name><Text>${refOrName}</Text></Name>`;
 }
 
+function parseDurationToSeconds(durationStr: string | undefined): number | null {
+  if (!durationStr) return null;
+  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return null;
+  const h = parseInt(match[1] || "0", 10);
+  const m = parseInt(match[2] || "0", 10);
+  const s = parseInt(match[3] || "0", 10);
+  return h * 3600 + m * 60 + s;
+}
+
 function mapOjpLocation(loc: any): Record<string, unknown> {
   if (!loc) return { id: null, name: null, type: "station", coordinate: null };
-  const place = loc.StopPlace || loc.StopPoint || loc.TopographicPlace || loc;
   
-  let id = null;
-  if (place.StopPlaceRef) id = place.StopPlaceRef;
-  else if (place.StopPointRef) id = place.StopPointRef;
-  else if (loc.StopPlaceRef) id = loc.StopPlaceRef;
-  
-  let name = null;
-  if (place.StopPlaceName?.Text) name = place.StopPlaceName.Text;
-  else if (place.StopPointName?.Text) name = place.StopPointName.Text;
-  else if (loc.LocationName?.Text) name = loc.LocationName.Text;
-  else if (loc.Name?.Text) name = loc.Name.Text;
+  const findGeo = (obj: any): any => {
+    if (!obj || typeof obj !== 'object') return null;
+    if (obj.Latitude && obj.Longitude) return obj;
+    if (obj.GeoPosition && obj.GeoPosition.Latitude) return obj.GeoPosition;
+    for (const key of Object.keys(obj)) {
+      const res = findGeo(obj[key]);
+      if (res) return res;
+    }
+    return null;
+  };
 
-  let coordinate = null;
-  const geo = loc.GeoPosition || place.GeoPosition;
-  if (geo && geo.Latitude && geo.Longitude) {
-    coordinate = { type: "WGS84", x: parseFloat(geo.Latitude), y: parseFloat(geo.Longitude) };
-  }
+  const findName = (obj: any): string | null => {
+    if (!obj || typeof obj !== 'object') return null;
+    if (obj.StopPlaceName?.Text) return obj.StopPlaceName.Text;
+    if (obj.StopPointName?.Text) return obj.StopPointName.Text;
+    if (obj.LocationName?.Text) return obj.LocationName.Text;
+    if (obj.Name?.Text) return obj.Name.Text;
+    for (const key of Object.keys(obj)) {
+      const res = findName(obj[key]);
+      if (res) return res;
+    }
+    return null;
+  };
+
+  const findId = (obj: any): string | null => {
+    if (!obj || typeof obj !== 'object') return null;
+    if (obj.StopPlaceRef) return obj.StopPlaceRef;
+    if (obj.StopPointRef) return obj.StopPointRef;
+    for (const key of Object.keys(obj)) {
+      const res = findId(obj[key]);
+      if (res) return res;
+    }
+    return null;
+  };
+
+  const geo = findGeo(loc);
+  const coordinate = (geo && geo.Latitude && geo.Longitude) 
+    ? { type: "WGS84", x: parseFloat(geo.Latitude), y: parseFloat(geo.Longitude) } 
+    : null;
   
   return {
-    id: id || null,
-    name: name || null,
+    id: findId(loc),
+    name: findName(loc) || null,
     type: "station",
     score: null,
     coordinate
@@ -138,8 +170,8 @@ function mapOjpTrip(tripResult: any): Record<string, unknown> {
       return {
         journey: null,
         walk: {
-          duration: cl.Duration ? 0 : null, 
-          distance: cl.Length || null
+          duration: parseDurationToSeconds(cl.Duration), 
+          distance: cl.Length ? parseInt(cl.Length, 10) : null
         },
         departure: {
           station: mapOjpLocation(cl.LegStart),
