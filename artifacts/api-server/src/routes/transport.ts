@@ -99,6 +99,48 @@ async function fetchDb(
   }
 }
 
+// ── geocoding helper ───────────────────────────────────────────
+
+async function geocodeAddress(text: string): Promise<{ lat: number, lon: number } | null> {
+  const GEOAPIFY_KEY = process.env.VITE_GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
+  if (!GEOAPIFY_KEY) return null;
+  const url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(text)}&apiKey=${GEOAPIFY_KEY}&limit=1`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    if (data.features && data.features.length > 0) {
+      const coords = data.features[0].geometry.coordinates; // [lon, lat]
+      return { lat: coords[1], lon: coords[0] };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function extractMissingCoords(loc: any, set: Set<string>) {
+  if (loc && loc.station && loc.station.coordinate && loc.station.coordinate.x === null) {
+    if (loc.station.name) {
+      set.add(loc.station.name);
+    }
+  }
+}
+
+function applyCoords(loc: any, map: Map<string, { lat: number, lon: number }>) {
+  if (loc && loc.station && loc.station.coordinate && loc.station.coordinate.x === null) {
+    if (loc.station.name && map.has(loc.station.name)) {
+      const coords = map.get(loc.station.name)!;
+      loc.station.coordinate.x = coords.lat;
+      loc.station.coordinate.y = coords.lon;
+      if (loc.location && loc.location.coordinate) {
+        loc.location.coordinate.x = coords.lat;
+        loc.location.coordinate.y = coords.lon;
+      }
+    }
+  }
+}
+
 // ── normalizers (DB schema → OpenData schema) ───────────────────
 
 function normalizeDbLocation(loc: Record<string, unknown>): Record<string, unknown> {
@@ -270,7 +312,34 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 
     // Append DB-only stations (not already in Swiss results)
     const dbOnlyStations = Array.from(dbByName.values()).map(normalizeDbLocation);
-    res.json({ stations: [...enrichedSwiss, ...dbOnlyStations] });
+    const finalStations = [...enrichedSwiss, ...dbOnlyStations];
+
+    // Geocode any addresses without coordinates
+    const missingCoords = new Set<string>();
+    finalStations.forEach((s: any) => {
+      if (s.coordinate && s.coordinate.x === null && s.name) {
+        missingCoords.add(s.name);
+      }
+    });
+
+    if (missingCoords.size > 0) {
+      const coordsMap = new Map<string, { lat: number, lon: number }>();
+      await Promise.all(
+        Array.from(missingCoords).map(async (name) => {
+          const coords = await geocodeAddress(name);
+          if (coords) coordsMap.set(name, coords);
+        })
+      );
+      finalStations.forEach((s: any) => {
+        if (s.coordinate && s.coordinate.x === null && s.name && coordsMap.has(s.name)) {
+          const coords = coordsMap.get(s.name)!;
+          s.coordinate.x = coords.lat;
+          s.coordinate.y = coords.lon;
+        }
+      });
+    }
+
+    res.json({ stations: finalStations });
   } catch (error) {
     res.status(500).json({ error: "Failed to process location search request." });
   }
@@ -415,6 +484,49 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
       (swissData as any)?.to ??
       (dbConnections[0]?.to as any)?.station ??
       null;
+
+    const missingCoords = new Set<string>();
+    if (fromLoc?.coordinate && fromLoc.coordinate.x === null && fromLoc.name) missingCoords.add(fromLoc.name);
+    if (toLoc?.coordinate && toLoc.coordinate.x === null && toLoc.name) missingCoords.add(toLoc.name);
+
+    merged.forEach(conn => {
+      extractMissingCoords(conn.from, missingCoords);
+      extractMissingCoords(conn.to, missingCoords);
+      (conn.sections as any[])?.forEach((sec: any) => {
+        extractMissingCoords(sec.departure, missingCoords);
+        extractMissingCoords(sec.arrival, missingCoords);
+      });
+    });
+
+    if (missingCoords.size > 0) {
+      const coordsMap = new Map<string, { lat: number, lon: number }>();
+      await Promise.all(
+        Array.from(missingCoords).map(async (name) => {
+          const coords = await geocodeAddress(name);
+          if (coords) coordsMap.set(name, coords);
+        })
+      );
+
+      if (fromLoc?.coordinate && fromLoc.coordinate.x === null && fromLoc.name && coordsMap.has(fromLoc.name)) {
+        const coords = coordsMap.get(fromLoc.name)!;
+        fromLoc.coordinate.x = coords.lat;
+        fromLoc.coordinate.y = coords.lon;
+      }
+      if (toLoc?.coordinate && toLoc.coordinate.x === null && toLoc.name && coordsMap.has(toLoc.name)) {
+        const coords = coordsMap.get(toLoc.name)!;
+        toLoc.coordinate.x = coords.lat;
+        toLoc.coordinate.y = coords.lon;
+      }
+
+      merged.forEach(conn => {
+        applyCoords(conn.from, coordsMap);
+        applyCoords(conn.to, coordsMap);
+        (conn.sections as any[])?.forEach((sec: any) => {
+          applyCoords(sec.departure, coordsMap);
+          applyCoords(sec.arrival, coordsMap);
+        });
+      });
+    }
 
     res.json({ from: fromLoc, to: toLoc, connections: merged });
   } catch (error) {
