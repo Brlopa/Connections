@@ -42,7 +42,7 @@ const _dirname = typeof __dirname !== "undefined" ? __dirname : path.dirname(_fi
 const frontendPath = path.resolve(_dirname, "../../sbb-connections/dist/public");
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath));
-  app.get("*", (req, res, next) => {
+  app.get("/{*path}", (req, res, next) => {
     if (!req.path.startsWith("/api")) {
       res.sendFile(path.resolve(frontendPath, "index.html"));
     } else {
