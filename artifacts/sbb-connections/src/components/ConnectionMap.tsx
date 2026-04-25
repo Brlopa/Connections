@@ -303,6 +303,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current.removeSource("transit-source");
     }
     if (map.current.getSource("walks-source")) {
+      if (map.current.getLayer("walks-arrow")) map.current.removeLayer("walks-arrow");
       map.current.removeLayer("walks-line");
       map.current.removeSource("walks-source");
     }
@@ -370,6 +371,26 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           "line-color": "#0b26f5",
           "line-width": 4,
           "line-opacity": 1,
+        },
+      });
+
+      map.current.addLayer({
+        id: "walks-arrow",
+        type: "symbol",
+        source: "walks-source",
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 60,
+          "icon-image": "triangle-stroked-15",
+          "icon-size": 1.2,
+          "icon-rotate": 90,
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: {
+          "icon-color": "#0b26f5",
+          "icon-opacity": 0.9,
         },
       });
     }
