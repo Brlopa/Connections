@@ -372,7 +372,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
         paint: {
           "line-color": "#0b26f5",
           "line-width": 4,
-          "line-opacity": 1,
+          "line-opacity": 0.8,
         },
       });
 
