@@ -11,7 +11,7 @@ const router: IRouter = Router();
 
 // Replace with OJP endpoints
 const OJP_API_URL = "https://api.opentransportdata.swiss/ojp20";
-const OJP_TOKEN = process.env.VITE_OJP_TOKEN || process.env.OPEN_DATA_TOKEN || process.env.OJP_TOKEN || "";
+const OJP_TOKEN = process.env.OJP_TOKEN || process.env.OPEN_DATA_TOKEN || process.env.VITE_OJP_TOKEN || "";
 
 // Initialize fast-xml-parser
 const parser = new XMLParser({
