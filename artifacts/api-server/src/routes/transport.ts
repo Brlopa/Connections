@@ -19,7 +19,7 @@ const parser = new XMLParser({
   textNodeName: "#text",
   removeNSPrefix: true,
   isArray: (name, jpath) => {
-    const arrNames = ["LocationResult", "Location", "StopEventResult", "TripResult", "Leg", "LegIntermediate"];
+    const arrNames = ["PlaceResult", "Place", "StopEventResult", "TripResult", "Leg", "LegIntermediate"];
     return arrNames.includes(name);
   }
 });
@@ -43,11 +43,11 @@ async function fetchOjp(xmlPayload: string): Promise<any> {
     headers,
     body: xmlPayload
   });
-  
+
   if (!res.ok) {
     throw new Error(`OJP API error ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  
+
   const xmlResponse = await res.text();
   return parser.parse(xmlResponse);
 }
@@ -55,7 +55,14 @@ async function fetchOjp(xmlPayload: string): Promise<any> {
 // ── helpers ──────────────────────────────────────────────────
 
 function buildPlaceRef(refOrName: string) {
-  if (/^[0-9]{7,8}$/.test(refOrName) || refOrName.startsWith("ch:")) {
+  if (/^[0-9]{7,8}$/.test(refOrName)) {
+    if (refOrName.startsWith("85")) {
+      const sloid = parseInt(refOrName, 10) - 8500000;
+      return `<StopPlaceRef>ch:1:sloid:${sloid}</StopPlaceRef>`;
+    }
+    return `<StopPlaceRef>${refOrName}</StopPlaceRef>`;
+  }
+  if (refOrName.startsWith("ch:")) {
     return `<StopPlaceRef>${refOrName}</StopPlaceRef>`;
   }
   return `<Name><Text>${refOrName}</Text></Name>`;
@@ -73,7 +80,7 @@ function parseDurationToSeconds(durationStr: string | undefined): number | null 
 
 function mapOjpLocation(loc: any): Record<string, unknown> {
   if (!loc) return { id: null, name: null, type: "station", coordinate: null };
-  
+
   const findGeo = (obj: any): any => {
     if (!obj || typeof obj !== 'object') return null;
     if (obj.Latitude && obj.Longitude) return obj;
@@ -87,10 +94,15 @@ function mapOjpLocation(loc: any): Record<string, unknown> {
 
   const findName = (obj: any): string | null => {
     if (!obj || typeof obj !== 'object') return null;
-    if (obj.StopPlaceName?.Text) return obj.StopPlaceName.Text;
-    if (obj.StopPointName?.Text) return obj.StopPointName.Text;
-    if (obj.LocationName?.Text) return obj.LocationName.Text;
-    if (obj.Name?.Text) return obj.Name.Text;
+
+    // Helper to extract text from object like { "#text": "Name", "@_lang": "de" }
+    const extractText = (val: any) => typeof val === 'string' ? val : (val && val['#text'] ? val['#text'] : null);
+
+    if (obj.StopPlaceName?.Text) return extractText(obj.StopPlaceName.Text);
+    if (obj.StopPointName?.Text) return extractText(obj.StopPointName.Text);
+    if (obj.LocationName?.Text) return extractText(obj.LocationName.Text);
+    if (obj.Name?.Text) return extractText(obj.Name.Text);
+
     for (const key of Object.keys(obj)) {
       const res = findName(obj[key]);
       if (res) return res;
@@ -110,10 +122,10 @@ function mapOjpLocation(loc: any): Record<string, unknown> {
   };
 
   const geo = findGeo(loc);
-  const coordinate = (geo && geo.Latitude && geo.Longitude) 
-    ? { type: "WGS84", x: parseFloat(geo.Latitude), y: parseFloat(geo.Longitude) } 
+  const coordinate = (geo && geo.Latitude && geo.Longitude)
+    ? { type: "WGS84", x: parseFloat(geo.Latitude), y: parseFloat(geo.Longitude) }
     : null;
-  
+
   return {
     id: findId(loc),
     name: findName(loc) || null,
@@ -126,16 +138,16 @@ function mapOjpLocation(loc: any): Record<string, unknown> {
 function mapOjpTrip(tripResult: any): Record<string, unknown> {
   const trip = tripResult.Trip;
   if (!trip) return {};
-  
+
   const legs = Array.isArray(trip.Leg) ? trip.Leg : (trip.Leg ? [trip.Leg] : []);
-  
+
   const sections = legs.map((leg: any) => {
     if (leg.TimedLeg) {
       const tl = leg.TimedLeg;
       const service = tl.Service || {};
       const mode = service.Mode || {};
       const cat = service.ProductCategory?.ShortName?.Text || service.PublishedServiceName?.Text || mode.Name?.Text || "Train";
-      
+
       const passListNodes = tl.LegIntermediate || [];
       const passList = (Array.isArray(passListNodes) ? passListNodes : [passListNodes]).map((i: any) => ({
         station: mapOjpLocation(i),
@@ -156,7 +168,7 @@ function mapOjpTrip(tripResult: any): Record<string, unknown> {
           station: mapOjpLocation(tl.LegBoard),
           departure: tl.LegBoard?.ServiceDeparture?.TimetabledTime || null,
           departureTimestamp: tl.LegBoard?.ServiceDeparture?.TimetabledTime ? Math.floor(new Date(tl.LegBoard.ServiceDeparture.TimetabledTime).getTime() / 1000) : null,
-          delay: null, 
+          delay: null,
           platform: tl.LegBoard?.EstimatedQuay?.Text || tl.LegBoard?.PlannedQuay?.Text || null
         },
         arrival: {
@@ -172,7 +184,7 @@ function mapOjpTrip(tripResult: any): Record<string, unknown> {
       return {
         journey: null,
         walk: {
-          duration: parseDurationToSeconds(cl.Duration), 
+          duration: parseDurationToSeconds(cl.Duration),
           distance: cl.Length ? parseInt(cl.Length, 10) : null
         },
         departure: {
@@ -188,7 +200,7 @@ function mapOjpTrip(tripResult: any): Record<string, unknown> {
     return null;
   }).filter(Boolean);
 
-  let durationStr = trip.Duration || "0d00:00:00"; 
+  let durationStr = trip.Duration || "0d00:00:00";
   const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (match) {
     const h = parseInt(match[1] || "0");
@@ -212,10 +224,10 @@ function mapOjpStopEvent(event: any): Record<string, unknown> {
   const service = event.StopEvent?.Service || {};
   const mode = service.Mode || {};
   const cat = service.ProductCategory?.ShortName?.Text || service.PublishedServiceName?.Text || mode.Name?.Text || "Train";
-  
+
   return {
     stop: {
-      station: mapOjpLocation(call), 
+      station: mapOjpLocation(call),
       arrival: call?.ServiceArrival?.TimetabledTime || null,
       departure: call?.ServiceDeparture?.TimetabledTime || null,
       platform: call?.EstimatedQuay?.Text || call?.PlannedQuay?.Text || null
@@ -237,10 +249,10 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
       res.json({ stations: [] });
       return;
     }
-    
-    const inputXml = req.query.x && req.query.y 
+
+    const inputXml = req.query.x && req.query.y
       ? `<GeoPosition><Longitude>${req.query.y}</Longitude><Latitude>${req.query.x}</Latitude></GeoPosition>`
-      : `<LocationName>${query}</LocationName>`;
+      : `<Name>${query}</Name>`;
 
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <OJP xmlns="http://www.vdv.de/ojp" xmlns:siri="http://www.siri.org.uk/siri" version="2.0">
@@ -262,17 +274,17 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 </OJP>`;
 
     const data = await fetchOjp(xml);
-    const locationResults = data?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery?.LocationResult || [];
-    
-    // Extract the <Location> objects from the <LocationResult> wrappers
-    let locations = (Array.isArray(locationResults) ? locationResults : [locationResults]).map((lr: any) => lr.Location).filter(Boolean);
-    
-    // Flatten if Location is somehow an array itself
+    const locationResults = data?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery?.PlaceResult || [];
+
+    // Extract the <Place> objects from the <PlaceResult> wrappers
+    let locations = (Array.isArray(locationResults) ? locationResults : [locationResults]).map((lr: any) => lr.Place).filter(Boolean);
+
+    // Flatten if Place is somehow an array itself
     locations = locations.flat();
 
     // Debugging output to terminal if nothing was found
     if (locations.length === 0) {
-       console.log("No locations found. Raw parsed OJP response:", JSON.stringify(data?.OJP?.OJPResponse, null, 2));
+      console.log("No locations found. Raw parsed OJP response:", JSON.stringify(data?.OJP?.OJPResponse, null, 2));
     }
 
     const stations = locations.map((l: any) => mapOjpLocation(l));
@@ -350,7 +362,7 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
       return;
     }
     const { station, limit, type } = parsed.data;
-    
+
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <OJP xmlns="http://www.vdv.de/ojp" xmlns:siri="http://www.siri.org.uk/siri" version="2.0">
   <OJPRequest>
@@ -380,7 +392,7 @@ router.get("/transport/stationboard", async (req, res): Promise<void> => {
     const data = await fetchOjp(xml);
     const events = data?.OJP?.OJPResponse?.ServiceDelivery?.OJPStopEventDelivery?.StopEventResult || [];
     const stationboard = (Array.isArray(events) ? events : [events]).map(mapOjpStopEvent);
-    
+
     res.json({ stationboard });
   } catch (error) {
     console.error(error);
@@ -416,9 +428,9 @@ router.post('/transport/route', async (req: Request, res: Response): Promise<voi
     if (!response.ok) {
       throw new Error(`Routing API returned status ${response.status}`);
     }
-    
+
     const data = await response.json() as any;
-    
+
     if (!data.features || data.features.length === 0) {
       res.status(404).json({ error: 'No valid path found' });
       return;
