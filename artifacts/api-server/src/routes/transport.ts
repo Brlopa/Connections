@@ -11,7 +11,6 @@ const router: IRouter = Router();
 
 // Replace with OJP endpoints
 const OJP_API_URL = "https://api.opentransportdata.swiss/ojp20";
-const OJP_TOKEN = process.env.OJP_TOKEN || process.env.OPEN_DATA_TOKEN || process.env.VITE_OJP_TOKEN || "";
 
 // Initialize fast-xml-parser
 const parser = new XMLParser({
@@ -26,14 +25,17 @@ const parser = new XMLParser({
 });
 
 async function fetchOjp(xmlPayload: string): Promise<any> {
-  if (!OJP_TOKEN) {
+  // Retrieve token at execution time to guarantee Replit secrets are fully hydrated into process.env
+  const ojpToken = process.env.OJP_TOKEN || process.env.OPEN_DATA_TOKEN || process.env.VITE_OJP_TOKEN || "";
+
+  if (!ojpToken) {
     console.warn("WARNING: Missing OJP_TOKEN. Requests to OpenTransportData will fail if the API requires authorization.");
   }
   const headers: Record<string, string> = {
     "Content-Type": "application/xml",
   };
-  if (OJP_TOKEN) {
-    headers["Authorization"] = `Bearer ${OJP_TOKEN}`;
+  if (ojpToken) {
+    headers["Authorization"] = `Bearer ${ojpToken}`;
   }
 
   const res = await fetch(OJP_API_URL, {
@@ -393,6 +395,7 @@ interface GeoCoordinate {
 
 router.post('/transport/route', async (req: Request, res: Response): Promise<void> => {
   const { start, end } = req.body as { start: GeoCoordinate; end: GeoCoordinate };
+  // Geoapify key is properly loaded inside the execution scope.
   const GEOAPIFY_KEY = process.env.VITE_GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
 
   if (!start || !end) {
