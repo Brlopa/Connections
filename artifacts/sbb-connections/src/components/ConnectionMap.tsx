@@ -384,6 +384,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           "symbol-placement": "line",
           "symbol-spacing": 50,
           "text-field": "▶",
+          "text-font": ["Noto Sans Regular"],
           "text-size": 14,
           "text-keep-upright": false,
         },
