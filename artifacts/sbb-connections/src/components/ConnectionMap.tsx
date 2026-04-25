@@ -76,7 +76,7 @@ function extractStops(connection: Connection): StopPoint[] {
     const lat = cp.station.coordinate.x!;
     const lng = cp.station.coordinate.y!;
     const key = `${lat},${lng}`;
-    
+
     const existing = stopsMap.get(key);
     if (!existing || priority > existing._priority) {
       stopsMap.set(key, {
@@ -108,7 +108,7 @@ function extractStops(connection: Connection): StopPoint[] {
     } else if (!isLast) {
       addStop(sec.arrival, "transfer", 2);
     }
-    
+
     // Ankunftsstation des Teilabschnitts (Priorität 2)
     addStop(sec.arrival, "transfer", 2);
   });
@@ -126,7 +126,7 @@ function extractTransitSegments(connection: Connection): TransitSegment[] {
     if (!sec.walk && sec.journey && hasCoords(sec.departure) && hasCoords(sec.arrival)) {
       const coords: [number, number][] = [];
       coords.push([sec.departure.station.coordinate.y!, sec.departure.station.coordinate.x!]);
-      
+
       if (sec.journey.passList) {
         sec.journey.passList.forEach((cp) => {
           if (hasCoords(cp)) {
@@ -134,7 +134,7 @@ function extractTransitSegments(connection: Connection): TransitSegment[] {
           }
         });
       }
-      
+
       coords.push([sec.arrival.station.coordinate.y!, sec.arrival.station.coordinate.x!]);
       segments.push({ id: `transit-${i}`, coordinates: coords });
     }
@@ -211,7 +211,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const markersRef = useRef<maplibregl.Marker[]>([]);
-  
+
   const [walkGeometries, setWalkGeometries] = useState<Record<string, any>>({});
 
   const stops = useMemo(() => extractStops(connection), [connection]);
@@ -247,7 +247,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
 
   useEffect(() => {
     let isMounted = true;
-    
+
     const fetchWalkRoutes = async () => {
       if (walks.length === 0) return;
 
@@ -271,7 +271,7 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           });
 
           if (!res.ok) continue;
-          
+
           const feature = await res.json();
           if (feature && feature.geometry) {
             resolvedGeometries[walk.id] = feature.geometry;
@@ -303,6 +303,9 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       map.current.removeSource("transit-source");
     }
     if (map.current.getSource("walks-source")) {
+      if (map.current.getLayer("walks-arrows")) {
+        map.current.removeLayer("walks-arrows");
+      }
       map.current.removeLayer("walks-line");
       map.current.removeSource("walks-source");
     }
@@ -370,7 +373,24 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
           "line-color": "#0b26f5",
           "line-width": 4,
           "line-opacity": 1,
-          "line-dasharray": [1, 1],
+        },
+      });
+
+      map.current.addLayer({
+        id: "walks-arrows",
+        type: "symbol",
+        source: "walks-source",
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 50,
+          "text-field": "▶",
+          "text-size": 12,
+          "text-keep-upright": false,
+        },
+        paint: {
+          "text-color": "#0b26f5",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1,
         },
       });
     }
@@ -386,13 +406,12 @@ export function ConnectionMap({ connection, className = "" }: ConnectionMapProps
       popupContent.className = "text-sm font-medium leading-snug";
       popupContent.innerHTML = `
         <div class="font-bold text-base">${stop.name}</div>
-        ${
-          stop.time
-            ? `<div class="text-gray-600">
+        ${stop.time
+          ? `<div class="text-gray-600">
             ${stop.type === "arrival" ? "Arr." : "Dep."} ${stop.time}
             ${stop.delay && stop.delay > 0 ? `<span class="text-red-600 ml-1">+${stop.delay}'</span>` : ""}
           </div>`
-            : ""
+          : ""
         }
         ${stop.platform ? `<div class="text-gray-500 text-xs">Platform ${stop.platform}</div>` : ""}
         <div class="text-xs text-gray-400 mt-0.5 capitalize">${stop.type}</div>
