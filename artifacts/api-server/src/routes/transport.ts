@@ -46,6 +46,13 @@ function ts(iso: string | null | undefined): number | null {
   return isNaN(t) ? null : Math.floor(t / 1000);
 }
 
+function getText(val: any): string | null {
+  if (!val) return null;
+  if (typeof val === "string") return val;
+  if (typeof val === "object" && val["#text"]) return String(val["#text"]);
+  return null;
+}
+
 function isoToDuration(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
@@ -68,7 +75,7 @@ function placeToStation(place: any): Record<string, unknown> {
   const geo = place?.GeoPosition;
   return {
     id: place?.StopPlace?.StopPlaceRef ?? place?.StopPoint?.StopPointRef ?? null,
-    name: place?.Name?.Text ?? place?.StopPlace?.StopPlaceName?.Text ?? null,
+    name: getText(place?.Name?.Text ?? place?.StopPlace?.StopPlaceName?.Text),
     type: "station",
     score: null,
     coordinate: geo
@@ -86,7 +93,7 @@ function stopRefToStation(ref: string | null | undefined, name: string | null | 
   if (isNaN(lon)) lon = 0;
   return {
     id: ref ?? null,
-    name: name ?? p?.Place?.Name?.Text ?? p?.Name?.Text ?? null,
+    name: getText(name ?? p?.Place?.Name?.Text ?? p?.Name?.Text),
     score: null,
     coordinate: { type: "WGS84", x: lat, y: lon },
     type: "station",
@@ -132,11 +139,11 @@ function legToSection(leg: any, placeCtx: Map<string, any>): Record<string, unkn
     const svc = tl.Service ?? {};
     const mode = svc.Mode ?? {};
     const ptMode: string = mode.PtMode ?? "";
-    const lineNum: string = svc.PublishedServiceName?.Text ?? svc.TrainNumber ?? "";
+    const lineNum: string = getText(svc.PublishedServiceName?.Text ?? svc.TrainNumber) ?? "";
     const category = ptMode === "rail" ? (lineNum.match(/^(IC|IR|RE|S|EC|RB|TGV|ICE)/i)?.[0] ?? "train") : ptMode;
     const intermediates: any[] = Array.isArray(tl.LegIntermediate) ? tl.LegIntermediate : tl.LegIntermediate ? [tl.LegIntermediate] : [];
     const passList = intermediates.map((im: any) => {
-      const ref = im?.StopPointRef; const nm = im?.StopPointName?.Text;
+      const ref = im?.StopPointRef; const nm = getText(im?.StopPointName?.Text);
       const sArr = im?.ServiceArrival; const sDep = im?.ServiceDeparture;
       const arrT = sArr?.EstimatedTime ?? sArr?.TimetabledTime ?? null;
       const depT = sDep?.EstimatedTime ?? sDep?.TimetabledTime ?? null;
@@ -154,7 +161,7 @@ function legToSection(leg: any, placeCtx: Map<string, any>): Record<string, unkn
         categoryCode: null,
         number: svc.JourneyRef ?? null,
         operator: svc.OperatorRef ?? null,
-        to: svc.DestinationText?.Text ?? null,
+        to: getText(svc.DestinationText?.Text),
         passList,
         capacity1st: null, capacity2nd: null,
       },
@@ -171,8 +178,8 @@ function legToSection(leg: any, placeCtx: Map<string, any>): Record<string, unkn
     const endGeo = cl.LegEnd?.GeoPosition;
     const startRef = cl.LegStart?.StopPointRef ?? cl.LegStart?.StopPlaceRef;
     const endRef = cl.LegEnd?.StopPointRef ?? cl.LegEnd?.StopPlaceRef;
-    const startName = cl.LegStart?.Name?.Text;
-    const endName = cl.LegEnd?.Name?.Text;
+    const startName = getText(cl.LegStart?.Name?.Text);
+    const endName = getText(cl.LegEnd?.Name?.Text);
     const mkStation = (ref: string|null|undefined, nm: string|null|undefined, geo: any) => {
       let lat = parseFloat(geo?.Latitude);
       let lon = parseFloat(geo?.Longitude);
@@ -239,7 +246,7 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
       const place = pr?.Place ?? {};
       const geo = place?.GeoPosition;
       const stopRef = place?.StopPlace?.StopPlaceRef ?? place?.StopPoint?.StopPointRef ?? null;
-      const name = place?.Name?.Text ?? place?.StopPlace?.StopPlaceName?.Text ?? null;
+      const name = getText(place?.Name?.Text ?? place?.StopPlace?.StopPlaceName?.Text);
       
       let lat = parseFloat(geo?.Latitude);
       let lon = parseFloat(geo?.Longitude);
