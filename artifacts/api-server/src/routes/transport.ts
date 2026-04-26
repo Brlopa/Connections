@@ -10,7 +10,7 @@ const router: IRouter = Router();
 // Legacy REST API – kept only for stationboard
 const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 
-const OJP_URL = "https://api.opentransportdata.swiss/ojp20";
+const OJP_URL = "https://api.opentransportdata.swiss/ojp20/";
 
 async function getParser() {
   const { XMLParser } = await import("fast-xml-parser");
@@ -45,6 +45,8 @@ function ts(iso: string | null | undefined): number | null {
   const t = new Date(iso).getTime();
   return isNaN(t) ? null : Math.floor(t / 1000);
 }
+
+const isId = (s: string) => /^\d{7,}/.test(s);
 
 function getText(val: any): string | null {
   if (!val) return null;
@@ -284,10 +286,9 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     const timeStr = time ?? `${String(new Date().getHours()).padStart(2,"0")}:${String(new Date().getMinutes()).padStart(2,"0")}`;
     const depArrTime = `${dateStr}T${timeStr}:00Z`;
 
-    const isId = (s: string) => /^\d{7,}/.test(s);
     const mkPlace = (name: string) => isId(name)
-      ? `<PlaceRef><StopPlaceRef>${name}</StopPlaceRef><Name><Text>${name}</Text></Name></PlaceRef>`
-      : `<PlaceRef><Name><Text>${name}</Text></Name></PlaceRef>`;
+      ? `<PlaceRef>${name}</PlaceRef>`
+      : `<LocationName><Text>${name}</Text></LocationName>`;
 
     const viaXml = via?.length
       ? via.map(v => `<Via><ViaPoint>${mkPlace(v)}</ViaPoint></Via>`).join("")
