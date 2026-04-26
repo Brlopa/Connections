@@ -77,10 +77,20 @@ function placeToStation(place: any): Record<string, unknown> {
   };
 }
 
-function stopRefToStation(stopRef: string | undefined, name: string | undefined, placeCtx: Map<string, any>): Record<string, unknown> {
-  const place = stopRef ? placeCtx.get(stopRef) : null;
-  if (place) return placeToStation(place);
-  return { id: stopRef ?? null, name: name ?? null, type: "station", score: null, coordinate: null };
+function stopRefToStation(ref: string | null | undefined, name: string | null | undefined, placeCtx: Map<string, any>): Record<string, unknown> {
+  const p = ref ? placeCtx.get(ref) : null;
+  const geo = p?.Place?.GeoPosition ?? p?.GeoPosition;
+  let lat = parseFloat(geo?.Latitude);
+  let lon = parseFloat(geo?.Longitude);
+  if (isNaN(lat)) lat = 0;
+  if (isNaN(lon)) lon = 0;
+  return {
+    id: ref ?? null,
+    name: name ?? p?.Place?.Name?.Text ?? p?.Name?.Text ?? null,
+    score: null,
+    coordinate: { type: "WGS84", x: lat, y: lon },
+    type: "station",
+  };
 }
 
 function buildPlaceContext(parsed: any): Map<string, any> {
@@ -163,9 +173,14 @@ function legToSection(leg: any, placeCtx: Map<string, any>): Record<string, unkn
     const endRef = cl.LegEnd?.StopPointRef ?? cl.LegEnd?.StopPlaceRef;
     const startName = cl.LegStart?.Name?.Text;
     const endName = cl.LegEnd?.Name?.Text;
-    const mkStation = (ref: string | undefined, nm: string | undefined, geo: any) =>
-      geo ? { id: ref??null, name: nm??null, type:"station", score:null, coordinate:{type:"WGS84",x:parseFloat(geo.Latitude??"NaN"),y:parseFloat(geo.Longitude??"NaN")} }
-           : stopRefToStation(ref, nm, placeCtx);
+    const mkStation = (ref: string|null|undefined, nm: string|null|undefined, geo: any) => {
+      let lat = parseFloat(geo?.Latitude);
+      let lon = parseFloat(geo?.Longitude);
+      if (isNaN(lat)) lat = 0;
+      if (isNaN(lon)) lon = 0;
+      return geo ? { id: ref??null, name: nm??null, type:"station", score:null, coordinate:{type:"WGS84",x:lat,y:lon} }
+            : stopRefToStation(ref, nm, placeCtx);
+    };
     return {
       journey: null,
       walk: { duration: durSec, distance: cl.Length ?? null },
