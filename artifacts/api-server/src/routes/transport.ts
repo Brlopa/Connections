@@ -1,11 +1,9 @@
-// artifacts/api-server/src/routes/transport.ts
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   SearchLocationsQueryParams,
   SearchConnectionsQueryParams,
   GetStationboardQueryParams,
 } from "@workspace/api-zod";
-import { XMLParser } from "fast-xml-parser";
 
 const router: IRouter = Router();
 
@@ -14,12 +12,16 @@ const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 
 const OJP_URL = "https://api.opentransportdata.swiss/ojp20";
 
-const XML_PARSER = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: true,
-  isArray: (n) => ["Leg","Position","TripResult","PlaceResult","LegIntermediate"].includes(n),
-});
+async function getParser() {
+  const { XMLParser } = await import("fast-xml-parser");
+  return new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "@_",
+    removeNSPrefix: true,
+    isArray: (n) => ["Leg","Position","TripResult","PlaceResult","LegIntermediate"].includes(n),
+  });
+}
+
 
 function getOjpKey(): string | undefined {
   return process.env.OJP_API_KEY;
@@ -184,14 +186,13 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
     let initialInput: string;
 
     if (req.query.x && req.query.y) {
-      // Geo-based search (x=lat, y=lon from frontend geolocation)
       const lat = String(req.query.x);
       const lon = String(req.query.y);
       initialInput = `<GeoRestriction><Circle><Center><siri:Longitude>${lon}</siri:Longitude><siri:Latitude>${lat}</siri:Latitude></Center><Radius>1000</Radius></Circle></GeoRestriction>`;
     } else {
-      const parsed = SearchLocationsQueryParams.safeParse(req.query);
-      if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
-      initialInput = `<Name>${parsed.data.query}</Name>`;
+      const parsedQuery = SearchLocationsQueryParams.safeParse(req.query);
+      if (!parsedQuery.success) { res.status(400).json({ error: parsedQuery.error.message }); return; }
+      initialInput = `<Name>${parsedQuery.data.query}</Name>`;
     }
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -209,8 +210,14 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
 </OJP>`;
 
     const xmlText = await ojpPost(xml);
-    const parsed = XML_PARSER.parse(xmlText);
-    const delivery = parsed?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery;
+    const parser = await getParser();
+    const parsedXml = parser.parse(xmlText);
+    const delivery = parsedXml?.OJP?.OJPResponse?.ServiceDelivery?.OJPLocationInformationDelivery;
+    
+    if (!delivery) {
+       console.log("OJP Location delivery missing. Full response:", JSON.stringify(parsedXml).slice(0, 500));
+    }
+
     const rawResults: any[] = Array.isArray(delivery?.PlaceResult) ? delivery.PlaceResult : delivery?.PlaceResult ? [delivery.PlaceResult] : [];
 
     const stations = rawResults.map((pr: any) => {
@@ -218,21 +225,28 @@ router.get("/transport/locations", async (req, res): Promise<void> => {
       const geo = place?.GeoPosition;
       const stopRef = place?.StopPlace?.StopPlaceRef ?? place?.StopPoint?.StopPointRef ?? null;
       const name = place?.Name?.Text ?? place?.StopPlace?.StopPlaceName?.Text ?? null;
+      
+      let lat = parseFloat(geo?.Latitude);
+      let lon = parseFloat(geo?.Longitude);
+      if (isNaN(lat)) lat = 0; // Fallback to 0 if NaN to satisfy Zod
+      if (isNaN(lon)) lon = 0;
+
       return {
         id: stopRef,
         name,
         type: "station",
         score: pr?.Probability ?? null,
-        coordinate: geo ? { type: "WGS84", x: parseFloat(geo.Latitude ?? "NaN"), y: parseFloat(geo.Longitude ?? "NaN") } : null,
+        coordinate: geo ? { type: "WGS84", x: lat, y: lon } : null,
       };
     });
 
     res.json({ stations });
   } catch (error) {
-    console.error("locations error:", error);
+    console.error("locations error details:", error);
     res.status(500).json({ error: "Failed to process location search request." });
   }
 });
+
 
 router.get("/transport/connections", async (req, res): Promise<void> => {
   try {
@@ -280,7 +294,8 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
 </OJP>`;
 
     const xmlText = await ojpPost(xml);
-    const parsedXml = XML_PARSER.parse(xmlText);
+    const parser = await getParser();
+    const parsedXml = parser.parse(xmlText);
     const placeCtx = buildPlaceContext(parsedXml);
     const delivery = parsedXml?.OJP?.OJPResponse?.ServiceDelivery?.OJPTripDelivery;
     const tripResults: any[] = Array.isArray(delivery?.TripResult) ? delivery.TripResult : delivery?.TripResult ? [delivery.TripResult] : [];
@@ -408,15 +423,7 @@ router.post('/transport/route', async (req: Request, res: Response): Promise<voi
     }
 
     const xmlText = await response.text();
-
-    // Parse with fast-xml-parser
-    const { XMLParser } = await import('fast-xml-parser');
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: '@_',
-      removeNSPrefix: true,
-      isArray: (name) => ['Leg', 'Position', 'TripResult'].includes(name),
-    });
+    const parser = await getParser();
     const parsed = parser.parse(xmlText);
 
     // Navigate to OJP response: OJP > OJPResponse > ServiceDelivery > OJPTripDelivery > TripResult[0] > Trip > Leg[*]
