@@ -10,7 +10,7 @@ const router: IRouter = Router();
 // Legacy REST API – kept only for stationboard
 const TRANSPORT_API_BASE = "https://transport.opendata.ch/v1";
 
-const OJP_URL = "https://api.opentransportdata.swiss/ojp20/";
+const OJP_URL = "https://api.opentransportdata.swiss/ojp20";
 
 async function getParser() {
   const { XMLParser } = await import("fast-xml-parser");
@@ -286,35 +286,42 @@ router.get("/transport/connections", async (req, res): Promise<void> => {
     const timeStr = time ?? `${String(new Date().getHours()).padStart(2,"0")}:${String(new Date().getMinutes()).padStart(2,"0")}`;
     const depArrTime = `${dateStr}T${timeStr}:00Z`;
 
-    const mkPlace = (name: string) => isId(name)
-      ? `<PlaceRef>${name}</PlaceRef>`
-      : `<LocationName><Text>${name}</Text></LocationName>`;
-
     const viaXml = via?.length
-      ? via.map(v => `<Via><ViaPoint>${mkPlace(v)}</ViaPoint></Via>`).join("")
+      ? via.map(v => `<Via><ViaPoint><PlaceRef>${v}</PlaceRef>${isId(v) ? "" : `<LocationName><Text>${v}</Text></LocationName>`}</ViaPoint></Via>`).join("")
       : "";
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <OJP xmlns="http://www.vdv.de/ojp" xmlns:siri="http://www.siri.org.uk/siri" version="2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <OJPRequest><siri:ServiceRequest>
-    <siri:RequestTimestamp>${now}</siri:RequestTimestamp>
-    <siri:RequestorRef>Connections_prod</siri:RequestorRef>
-    <OJPTripRequest>
+  <OJPRequest>
+    <siri:ServiceRequest>
       <siri:RequestTimestamp>${now}</siri:RequestTimestamp>
-      <siri:MessageIdentifier>TR-${Date.now()}</siri:MessageIdentifier>
-      <Origin>${mkPlace(from)}<DepArrTime>${depArrTime}</DepArrTime></Origin>
-      <Destination>${mkPlace(to)}${isArrivalTime === "1" ? `<DepArrTime>${depArrTime}</DepArrTime>` : ""}</Destination>
-      ${viaXml}
-      <Params>
-        <NumberOfResults>${limit ?? 5}</NumberOfResults>
-        <IncludeTrackSections>true</IncludeTrackSections>
-        <IncludeLegProjection>false</IncludeLegProjection>
-        <IncludeIntermediateStops>true</IncludeIntermediateStops>
-        <UseRealtimeData>explanatory</UseRealtimeData>
-      </Params>
-    </OJPTripRequest>
-  </siri:ServiceRequest></OJPRequest>
+      <siri:RequestorRef>Connections_prod</siri:RequestorRef>
+      <OJPTripRequest>
+        <siri:RequestTimestamp>${now}</siri:RequestTimestamp>
+        <siri:MessageIdentifier>TR-${Date.now()}</siri:MessageIdentifier>
+        <Origin>
+          <PlaceRef>${from}</PlaceRef>
+          ${isId(from) ? "" : `<LocationName><Text>${from}</Text></LocationName>`}
+          <DepArrTime>${depArrTime}</DepArrTime>
+        </Origin>
+        <Destination>
+          <PlaceRef>${to}</PlaceRef>
+          ${isId(to) ? "" : `<LocationName><Text>${to}</Text></LocationName>`}
+          ${isArrivalTime === "1" ? `<DepArrTime>${depArrTime}</DepArrTime>` : ""}
+        </Destination>
+        ${viaXml}
+        <Params>
+          <NumberOfResults>${limit ?? 5}</NumberOfResults>
+          <IncludeTrackSections>true</IncludeTrackSections>
+          <IncludeLegProjection>false</IncludeLegProjection>
+          <IncludeIntermediateStops>true</IncludeIntermediateStops>
+          <UseRealtimeData>explanatory</UseRealtimeData>
+        </Params>
+      </OJPTripRequest>
+    </siri:ServiceRequest>
+  </OJPRequest>
 </OJP>`;
+
 
     const xmlText = await ojpPost(xml);
     const parser = await getParser();
