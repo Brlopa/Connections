@@ -16,7 +16,6 @@
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
-    "fast-xml-parser": "^5.7.2",
     "pino": "^9",
     "pino-http": "^10"
   },
